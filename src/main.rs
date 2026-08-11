@@ -1,3 +1,4 @@
+use core::f64;
 use inari::{Interval, interval};
 use matplotlib as plt;
 use plt::pyplot::subplots;
@@ -60,16 +61,18 @@ where
 }
 
 fn hausdorff_nested(inner: Interval, outer: Interval) -> f64 {
-    let d_lo = inner.inf() - outer.inf();
-    let d_hi = outer.sup() - inner.sup();
+    let d_lo = (inner.inf() - outer.inf()).abs();
+    let d_hi = (outer.sup() - inner.sup()).abs();
     d_lo.max(d_hi)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let x = interval!(0., 4.)?;
-    let reference = interval!(0., std::f64::consts::PI)?; // exact range
+    // Exact range f([0,4]) = [0, π], obtained analytically from f'(x) = x sin(x)
+    let reference = interval!(0., std::f64::consts::PI)?;
     println!("reference = {}", reference);
 
+    // Target widths used to refine the initial interval [0,4].
     let eps_values: Vec<f64> = vec![1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5];
     let mut hs0 = Vec::new();
     let mut d_hs0 = Vec::new();
@@ -77,21 +80,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut d_hs1 = Vec::new();
 
     for &eps in &eps_values {
+        // Actual width h of the subintervals after subdivision.
+        let depth = (4.0 / eps).log2().ceil() as u32;
+        let h = 4.0 / 2.0_f64.powi(depth as i32);
+
         let enc0 = range_enclosure(f, x, eps, 50);
         let d0 = hausdorff_nested(reference, enc0);
-        println!("[order 0] h={:>12.6e}  d_H={:>12.6e}", eps, d0);
-        if d0 > 0.0 {
-            hs0.push(eps);
-            d_hs0.push(d0);
-        }
+
+        println!(
+            "[order 0] eps={:.1e}, h={:.6e}, E={}, d_H={:.6e}",
+            eps, h, enc0, d0
+        );
+
+        hs0.push(h);
+        d_hs0.push(d0);
 
         let enc1 = range_enclosure_order1(f, fprime, x, eps, 60);
         let d1 = hausdorff_nested(reference, enc1);
-        println!("[order 1] h={:>12.6e}  d_H={:>12.6e}", eps, d1);
-        if d1 > 0.0 {
-            hs1.push(eps);
-            d_hs1.push(d1);
-        }
+
+        println!(
+            "[order 1] eps={:.1e}, h={:.6e}, E={}, d_H={:.6e}",
+            eps, h, enc1, d1
+        );
+
+        hs1.push(h);
+        d_hs1.push(d1);
     }
 
     let (fig, [[mut ax]]) = subplots()?;
@@ -108,6 +121,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ax.set_xlabel("$h$");
     ax.set_ylabel("$d_H$");
     ax.set_yscale("log");
+    ax.set_ylim(1e-11, 1e-1);
+    ax.set_xscale("log");
     ax.set_xlim(hs0[0], hs0[hs0.len() - 1]);
     ax.grid();
     ax.minorticks_on();

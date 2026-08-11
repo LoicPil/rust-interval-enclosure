@@ -1,0 +1,9 @@
+[package]
+name = "interval"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+inari = "2.0.0"
+matplotlib= {git = "https://github.com/Chris00/rust-matplotlib.git", branch = "dev"}
+#matplotlib = { path = "/home/piletteloic/Documents/Projects/Active/rust-matplotlib" }
