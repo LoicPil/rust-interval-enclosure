@@ -1,7 +1,9 @@
-use inari::{Interval, interval};
+#![allow(dead_code)]
+
+use inari::{Interval, const_interval, interval};
 
 use interval_enclosure::integration::{
-    GaussLegendreRule, gauss_legendre_certified, midpoint_certified, simpson_certified,
+    GaussLegendreRule, gaussian_certified, midpoint_certified, simpson_certified,
     trapezoidal_certified,
 };
 
@@ -9,7 +11,8 @@ use interval_enclosure::{f, fprime, hausdorff_nested, range_enclosure, range_enc
 
 use matplotlib::pyplot::subplots;
 
-/// Tests the convergence of the order-0 and order-1 range enclosures.
+const PI: Interval = const_interval!(std::f64::consts::PI, std::f64::consts::PI);
+
 fn run_convergence_graph() -> Result<(), Box<dyn std::error::Error>> {
     let x: Interval = interval!(0., 4.)?;
     let reference = interval!(0., std::f64::consts::PI)?;
@@ -40,6 +43,7 @@ fn run_convergence_graph() -> Result<(), Box<dyn std::error::Error>> {
         d_hs0.push(d0);
 
         let enc1 = range_enclosure_order1(f, fprime, x, eps, 60);
+
         let d1 = hausdorff_nested(reference, enc1);
 
         println!(
@@ -80,17 +84,12 @@ fn run_convergence_graph() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Tests the certified midpoint rule on a simple integral.
-fn run_midpoint_demo() {
-    let f_pp = |_x: Interval| -> Interval { interval!(-1.0, 1.0).unwrap() };
+fn run_midpoint_demo() -> Result<(), Box<dyn std::error::Error>> {
+    let f = |x: Interval| -> Interval { (PI * x).sin() };
 
-    let integral = midpoint_certified(
-        |x: f64| x.sin(),
-        f_pp,
-        0.0,
-        std::f64::consts::FRAC_PI_2,
-        100,
-    );
+    let f_pp = |x: Interval| -> Interval { -PI.powi(2) * (PI * x).sin() };
+
+    let integral = midpoint_certified(f, f_pp, 0.0, 1.0, 100)?;
 
     println!();
     println!("===== Midpoint demo =====");
@@ -100,34 +99,34 @@ fn run_midpoint_demo() {
         integral.inf(),
         integral.sup()
     );
+
+    Ok(())
 }
 
-/// Tests one Gauss-Legendre rule on
-///
-///     ∫_0^1 sin(πx) dx = 2/π.
-///
-/// The certified interval is checked against the exact value.
-fn run_gauss_demo() {
+fn run_gauss_demo() -> Result<(), Box<dyn std::error::Error>> {
     let pi = std::f64::consts::PI;
+
     let exact = 2.0 / pi;
 
     let order = 4usize;
+
     let subdivisions = 1;
 
     let rule = GaussLegendreRule::new(order);
 
-    let pi_2m = pi.powi((2 * order) as i32);
+    let f = |x: Interval| -> Interval { (PI * x).sin() };
 
-    let f_2m = move |_x: Interval| -> Interval {
+    let f_2m = move |x: Interval| -> Interval {
+        let coeff = interval!(pi.powi((2 * order) as i32), pi.powi((2 * order) as i32)).unwrap();
+
         if order % 2 == 0 {
-            interval!(0.0, pi_2m).unwrap()
+            coeff * (PI * x).sin()
         } else {
-            interval!(-pi_2m, 0.0).unwrap()
+            -coeff * (PI * x).sin()
         }
     };
 
-    let result =
-        gauss_legendre_certified(&rule, |x: f64| (pi * x).sin(), f_2m, 0.0, 1.0, subdivisions);
+    let result = gaussian_certified(&rule, f, f_2m, 0.0, 1.0, subdivisions)?;
 
     let width = result.sup() - result.inf();
 
@@ -137,6 +136,7 @@ fn run_gauss_demo() {
     println!("===== Gauss-Legendre demo =====");
 
     println!("order m        = {}", order);
+
     println!("subdivisions   = {}", subdivisions);
 
     println!(
@@ -146,65 +146,66 @@ fn run_gauss_demo() {
     );
 
     println!("width          = {:.6e}", width);
+
     println!("exact          = {:.15e}", exact);
+
     println!("contains exact = {}", contains_exact);
+
+    Ok(())
 }
 
-/// Compares the certified convergence of midpoint, trapezoidal,
-/// Simpson, and a fixed-order Gauss-Legendre quadrature rule.
-///
-/// The test uses
-///  ax.legend(std::iter::empty());
-///     ∫_0^1 sin(πx) dx = 2/π.
-///
-/// The number of subintervals n is varied while the Gauss-Legendre
-/// order is kept fixed.
 fn run_quadrature_convergence() -> Result<(), Box<dyn std::error::Error>> {
     let pi = std::f64::consts::PI;
+
     let exact = 2.0 / pi;
 
-    let pi2 = pi.powi(2);
-    let f_pp = move |_x: Interval| -> Interval { interval!(-pi2, pi2).unwrap() };
+    let f = |x: Interval| -> Interval { (PI * x).sin() };
 
-    let pi4 = pi.powi(4);
-    let f_4 = move |_x: Interval| -> Interval { interval!(-pi4, pi4).unwrap() };
+    let f_pp = |x: Interval| -> Interval { -PI.powi(2) * (PI * x).sin() };
+
+    let f_4 = |x: Interval| -> Interval { PI.powi(4) * (PI * x).sin() };
 
     let gauss_order = 3usize;
+
     let gauss_rule = GaussLegendreRule::new(gauss_order);
 
-    let pi_2m = pi.powi((2 * gauss_order) as i32);
+    let f_2m = move |x: Interval| -> Interval {
+        let coeff = PI.powi((2 * gauss_order) as i32);
 
-    let f_2m = move |_x: Interval| -> Interval {
         if gauss_order % 2 == 0 {
-            interval!(0.0, pi_2m).unwrap()
+            coeff * (PI * x).sin()
         } else {
-            interval!(-pi_2m, 0.0).unwrap()
+            -coeff * (PI * x).sin()
         }
     };
 
-    let n_values: Vec<u32> = vec![2, 4, 8, 16, 32, 64, 128, 256];
+    let n_values: Vec<u32> = vec![2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 
     let mut ns = Vec::new();
 
     let mut errors_mid = Vec::new();
+
     let mut errors_trap = Vec::new();
+
     let mut errors_simp = Vec::new();
+
     let mut errors_gauss = Vec::new();
 
     println!();
     println!("===== Quadrature convergence =====");
+
     println!("Gauss-Legendre order = {}", gauss_order);
+
     println!();
 
     for &n in &n_values {
-        let result_mid = midpoint_certified(|x: f64| (pi * x).sin(), f_pp, 0.0, 1.0, n);
+        let result_mid = midpoint_certified(f, f_pp, 0.0, 1.0, n)?;
 
-        let result_trap = trapezoidal_certified(|x: f64| (pi * x).sin(), f_pp, 0.0, 1.0, n);
+        let result_trap = trapezoidal_certified(f, f_pp, 0.0, 1.0, n)?;
 
-        let result_simp = simpson_certified(|x: f64| (pi * x).sin(), f_4, 0.0, 1.0, n);
+        let result_simp = simpson_certified(f, f_4, 0.0, 1.0, n)?;
 
-        let result_gauss =
-            gauss_legendre_certified(&gauss_rule, |x: f64| (pi * x).sin(), f_2m, 0.0, 1.0, n);
+        let result_gauss = gaussian_certified(&gauss_rule, f, f_2m, 0.0, 1.0, n)?;
 
         let width_mid = result_mid.sup() - result_mid.inf();
 
@@ -220,7 +221,6 @@ fn run_quadrature_convergence() -> Result<(), Box<dyn std::error::Error>> {
         );
 
         ns.push(n as f64);
-
         errors_mid.push(width_mid);
         errors_trap.push(width_trap);
         errors_simp.push(width_simp);
@@ -256,6 +256,7 @@ fn run_quadrature_convergence() -> Result<(), Box<dyn std::error::Error>> {
         .color([0.6, 0.0, 0.8])
         .label("Gauss-Legendre (m=3)")
         .plot();
+
     ax.set_xlabel("$n$");
     ax.set_ylabel("interval width");
 
@@ -274,11 +275,6 @@ fn run_quadrature_convergence() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Compares the certified convergence of Gauss-Legendre
-/// for several orders.
-///
-/// The Gauss order m is varied while the number of subintervals n
-/// is fixed for each curve.
 fn run_gauss_orders() -> Result<(), Box<dyn std::error::Error>> {
     let pi = std::f64::consts::PI;
 
@@ -288,34 +284,28 @@ fn run_gauss_orders() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut all_widths: Vec<Vec<f64>> = Vec::new();
 
+    let f = |x: Interval| -> Interval { (PI * x).sin() };
+
     for &subdivisions in &subdivisions_values {
         let mut widths = Vec::new();
 
         for &order in &orders {
             let rule = GaussLegendreRule::new(order);
 
-            let pi_2m = pi.powi((2 * order) as i32);
+            let f_2m = move |x: Interval| -> Interval {
+                let coeff =
+                    interval!(pi.powi((2 * order) as i32), pi.powi((2 * order) as i32)).unwrap();
 
-            let f_2m = move |_x: Interval| -> Interval {
                 if order % 2 == 0 {
-                    interval!(0.0, pi_2m).unwrap()
+                    coeff * (PI * x).sin()
                 } else {
-                    interval!(-pi_2m, 0.0).unwrap()
+                    -coeff * (PI * x).sin()
                 }
             };
 
-            let result = gauss_legendre_certified(
-                &rule,
-                |x: f64| (pi * x).sin(),
-                f_2m,
-                0.0,
-                1.0,
-                subdivisions,
-            );
+            let result = gaussian_certified(&rule, f, f_2m, 0.0, 1.0, subdivisions)?;
 
-            let width = result.sup() - result.inf();
-
-            widths.push(width);
+            widths.push(result.sup() - result.inf());
         }
 
         all_widths.push(widths);
@@ -323,6 +313,7 @@ fn run_gauss_orders() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
     println!("===== Gauss-Legendre order convergence =====");
+
     println!();
 
     for (i, &subdivisions) in subdivisions_values.iter().enumerate() {
@@ -348,6 +339,7 @@ fn run_gauss_orders() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ax.set_xlabel("Gauss-Legendre order $m$");
+
     ax.set_ylabel("interval width");
 
     ax.set_xscale("linear");
@@ -361,23 +353,75 @@ fn run_gauss_orders() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+// Assuming W(h) ≈ C h^p, we have ln(W) ≈ ln(C) + p ln(h).
+// The convergence rate p is therefore estimated as the slope
+// of the least-squares linear regression of ln(W) against ln(h).
+fn convergence_rate(hs: &[f64], widths: &[f64]) -> f64 {
+    let n = hs.len() as f64;
+
+    let xs: Vec<f64> = hs.iter().map(|&h| h.ln()).collect();
+    let ys: Vec<f64> = widths.iter().map(|&w| w.ln()).collect();
+
+    let sum_x: f64 = xs.iter().sum();
+    let sum_y: f64 = ys.iter().sum();
+
+    let sum_x2: f64 = xs.iter().map(|x| x * x).sum();
+
+    let sum_xy: f64 = xs.iter().zip(ys.iter()).map(|(x, y)| x * y).sum();
+
+    (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x)
+}
+fn run_gauss_convergence_rates() -> Result<(), Box<dyn std::error::Error>> {
+    let orders: Vec<usize> = (1..=7).collect();
+
+    let n_values: Vec<u32> = vec![2, 4, 8, 16, 32];
+
+    let f = |x: Interval| -> Interval { (PI * x).sin() };
+
+    println!();
+    println!("===== Gauss-Legendre convergence rates =====");
+    println!();
+
+    for &order in &orders {
+        let rule = GaussLegendreRule::new(order);
+
+        let mut hs = Vec::new();
+        let mut widths = Vec::new();
+
+        for &n in &n_values {
+            let f_2m = move |x: Interval| -> Interval {
+                let coeff = PI.powi((2 * order) as i32);
+
+                if order % 2 == 0 {
+                    coeff * (PI * x).sin()
+                } else {
+                    -coeff * (PI * x).sin()
+                }
+            };
+
+            let result = gaussian_certified(&rule, f, f_2m, 0.0, 1.0, n)?;
+
+            hs.push(1.0 / n as f64);
+            widths.push(result.sup() - result.inf());
+        }
+
+        let rate = convergence_rate(&hs, &widths);
+
+        println!("m = {:2} | experimental rate = {:.6}", order, rate);
+    }
+
+    Ok(())
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Range enclosure convergence
     // run_convergence_graph()?;
+    //
+    // run_midpoint_demo()?;
 
-    // Midpoint test
-    // run_midpoint_demo();
+    run_gauss_demo()?;
 
-    // Single Gauss-Legendre test
-    // run_gauss_demo();
-
-    // Comparison of midpoint, trapezoidal,
-    // Simpson, and Gauss-Legendre
     run_quadrature_convergence()?;
-
-    // Gauss-Legendre convergence for several orders
     run_gauss_orders()?;
-
+    run_gauss_convergence_rates()?;
     Ok(())
 }

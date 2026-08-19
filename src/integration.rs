@@ -1,96 +1,143 @@
-use inari::{Interval, interval};
+use inari::{Interval, IntervalError, const_interval, interval};
 use nalgebra::{DMatrix, SymmetricEigen};
 
+const ONE: Interval = const_interval!(1.0, 1.0);
+const ZERO: Interval = const_interval!(0.0, 0.0);
+const TWO: Interval = const_interval!(2.0, 2.0);
+const TWENTY_FOUR: Interval = const_interval!(24.0, 24.0);
+const TWELVE: Interval = const_interval!(12.0, 12.0);
+const SIX: Interval = const_interval!(6.0, 6.0);
+const FOUR: Interval = const_interval!(4.0, 4.0);
+const TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY: Interval = const_interval!(2880.0, 2880.0);
+
 /// Midpoint rule with certified second-derivative error term.
+///
 /// Per subinterval [x_i, x_i+h]:
-///   h f((x_i+x_i+h)/2) + h^3 / 24 * f''([x_i,x_i+h])
-pub fn midpoint_certified<F, FPP>(f: F, f_pp: FPP, a: f64, b: f64, n: u32) -> Interval
+///
+/// h f((x_i+x_{i+1})/2) + h^3/24 * f''([x_i,x_{i+1}])
+pub fn midpoint_certified<F, FPP>(
+    f: F,
+    f_pp: FPP,
+    a: f64,
+    b: f64,
+    n: u32,
+) -> Result<Interval, IntervalError>
 where
-    F: Fn(f64) -> f64,
+    F: Fn(Interval) -> Interval,
     FPP: Fn(Interval) -> Interval,
 {
-    let h = (b - a) / n as f64;
-    let mut acc = interval!(0.0, 0.0).unwrap();
+    let ia = interval!(a, a)?;
+    let ib = interval!(b, b)?;
+    let i_n = interval!(n as f64, n as f64)?;
+
+    let h = (ib - ia) / i_n;
+    let mut acc = ZERO;
 
     for i in 0..n {
-        let xi = a + (i as f64) * h;
-        let xi1 = xi + h;
-        let mid = (xi + xi1) / 2.0;
+        let ii = interval!(i as f64, i as f64)?;
+
+        let xi = ia + ii * h;
+        let xi1 = ia + (ii + ONE) * h;
+        let mid = (xi + xi1) / TWO;
 
         let point_value = f(mid) * h;
-        let sub = interval!(xi, xi1).unwrap();
 
-        let coeff = interval!(h.powi(3) / 24.0, h.powi(3) / 24.0).unwrap();
+        let sub = interval!(xi.inf(), xi1.sup())?;
 
+        let coeff = h.powi(3) / TWENTY_FOUR;
         let error_term = f_pp(sub) * coeff;
-        let point_interval = interval!(point_value, point_value).unwrap();
 
-        acc += point_interval + error_term;
+        acc += point_value + error_term;
     }
 
-    acc
+    Ok(acc)
 }
 
 /// Trapezoidal rule with certified second-derivative error term.
+///
 /// Per subinterval [x_i,x_i+h]:
-///   h/2 (f(x_i)+f(x_i+h)) - h^3/12 * f''([x_i,x_i+h])
-pub fn trapezoidal_certified<F, FPP>(f: F, f_pp: FPP, a: f64, b: f64, n: u32) -> Interval
+///
+/// h/2 (f(x_i)+f(x_{i+1}))
+///     - h^3/12 * f''([x_i,x_{i+1}])
+pub fn trapezoidal_certified<F, FPP>(
+    f: F,
+    f_pp: FPP,
+    a: f64,
+    b: f64,
+    n: u32,
+) -> Result<Interval, IntervalError>
 where
-    F: Fn(f64) -> f64,
+    F: Fn(Interval) -> Interval,
     FPP: Fn(Interval) -> Interval,
 {
-    let h = (b - a) / n as f64;
-    let mut acc = interval!(0.0, 0.0).unwrap();
+    let ia = interval!(a, a)?;
+    let ib = interval!(b, b)?;
+    let i_n = interval!(n as f64, n as f64)?;
+
+    let h = (ib - ia) / i_n;
+    let mut acc = ZERO;
 
     for i in 0..n {
-        let xi = a + (i as f64) * h;
-        let xi1 = xi + h;
+        let ii = interval!(i as f64, i as f64)?;
 
-        let point_value = (h / 2.0) * (f(xi) + f(xi1));
+        let xi = ia + ii * h;
+        let xi1 = ia + (ii + ONE) * h;
 
-        let sub = interval!(xi, xi1).unwrap();
+        let point_value = (h / TWO) * (f(xi) + f(xi1));
 
-        let coeff = interval!(h.powi(3) / 12.0, h.powi(3) / 12.0).unwrap();
+        let sub = interval!(xi.inf(), xi1.sup())?;
 
+        let coeff = h.powi(3) / TWELVE;
         let error_term = f_pp(sub) * coeff;
-        let point_interval = interval!(point_value, point_value).unwrap();
 
-        acc = acc + point_interval - error_term;
+        acc += point_value - error_term;
     }
 
-    acc
+    Ok(acc)
 }
 
 /// Simpson's rule with certified fourth-derivative error term.
+///
 /// Per subinterval [x_i,x_i+h]:
-///   h/6 (f(x_i)+4f(mid)+f(x_i+h))
-///   - h^5/2880 * f''''([x_i,x_i+h])
-pub fn simpson_certified<F, F4>(f: F, f_4: F4, a: f64, b: f64, n: u32) -> Interval
+///
+/// h/6 (f(x_i) + 4f(mid) + f(x_{i+1}))
+///     - h^5/2880 * f''''([x_i,x_{i+1}])
+pub fn simpson_certified<F, F4>(
+    f: F,
+    f_4: F4,
+    a: f64,
+    b: f64,
+    n: u32,
+) -> Result<Interval, IntervalError>
 where
-    F: Fn(f64) -> f64,
+    F: Fn(Interval) -> Interval,
     F4: Fn(Interval) -> Interval,
 {
-    let h = (b - a) / n as f64;
-    let mut acc = interval!(0.0, 0.0).unwrap();
+    let ia = interval!(a, a)?;
+    let ib = interval!(b, b)?;
+    let i_n = interval!(n as f64, n as f64)?;
+
+    let h = (ib - ia) / i_n;
+    let mut acc = ZERO;
 
     for i in 0..n {
-        let xi = a + (i as f64) * h;
-        let xi1 = xi + h;
-        let mid = (xi + xi1) / 2.0;
+        let ii = interval!(i as f64, i as f64)?;
 
-        let point_value = (h / 6.0) * (f(xi) + 4.0 * f(mid) + f(xi1));
+        let xi = ia + ii * h;
+        let xi1 = ia + (ii + ONE) * h;
+        let mid = (xi + xi1) / TWO;
 
-        let sub = interval!(xi, xi1).unwrap();
+        let point_value = (h / SIX) * (f(xi) + FOUR * f(mid) + f(xi1));
 
-        let coeff = interval!(h.powi(5) / 2880.0, h.powi(5) / 2880.0).unwrap();
+        let sub = interval!(xi.inf(), xi1.sup())?;
 
+        let coeff = h.powi(5) / TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY;
         let error_term = f_4(sub) * coeff;
-        let point_interval = interval!(point_value, point_value).unwrap();
 
-        acc = acc + point_interval - error_term;
+        acc += point_value - error_term;
     }
 
-    acc
+    Ok(acc)
 }
 
 /// Generic Gaussian quadrature rule on [-1,1].
@@ -100,64 +147,91 @@ pub trait GaussianRule {
     fn weights(&self) -> &[f64];
     fn c_n(&self, a: f64, b: f64) -> f64;
 
-    fn transported(&self, a: f64, b: f64) -> (Vec<f64>, Vec<f64>) {
-        let half = (b - a) / 2.0;
-        let mid = (a + b) / 2.0;
+    fn transported(&self, a: f64, b: f64) -> Result<(Vec<Interval>, Vec<Interval>), IntervalError> {
+        let half = interval!((b - a) / 2.0, (b - a) / 2.0)?;
+        let mid = interval!((a + b) / 2.0, (a + b) / 2.0)?;
 
-        let nodes = self.nodes().iter().map(|&s| half * s + mid).collect();
+        let nodes = self
+            .nodes()
+            .iter()
+            .map(|&s| {
+                let s = interval!(s, s).unwrap();
+                mid + half * s
+            })
+            .collect();
 
-        let weights = self.weights().iter().map(|&w| half * w).collect();
+        let weights = self
+            .weights()
+            .iter()
+            .map(|&w| {
+                let w = interval!(w, w).unwrap();
+                half * w
+            })
+            .collect();
 
-        (nodes, weights)
+        Ok((nodes, weights))
     }
 }
 
 /// Generic Gaussian quadrature with certified 2n-th derivative error term.
-pub fn gaussian_certified<R, F, F2N>(rule: &R, f: F, f_2n: F2N, a: f64, b: f64, n: u32) -> Interval
+pub fn gaussian_certified<R, F, F2N>(
+    rule: &R,
+    f: F,
+    f_2n: F2N,
+    a: f64,
+    b: f64,
+    n: u32,
+) -> Result<Interval, IntervalError>
 where
     R: GaussianRule,
-    F: Fn(f64) -> f64,
+    F: Fn(Interval) -> Interval,
     F2N: Fn(Interval) -> Interval,
 {
-    let h = (b - a) / n as f64;
+    let ia = interval!(a, a)?;
+    let ib = interval!(b, b)?;
+    let i_n = interval!(n as f64, n as f64)?;
+
+    let h = (ib - ia) / i_n;
     let two_n = 2 * rule.order();
 
     let mut fact_2n = 1.0_f64;
+
     for k in 1..=two_n {
         fact_2n *= k as f64;
     }
 
-    let mut acc = interval!(0.0, 0.0).unwrap();
+    let mut acc = ZERO;
 
     for i in 0..n {
-        let xi = a + (i as f64) * h;
-        let xi1 = xi + h;
+        let ii = interval!(i as f64, i as f64)?;
 
-        let (nodes, weights) = rule.transported(xi, xi1);
+        let xi = ia + ii * h;
+        let xi1 = ia + (ii + ONE) * h;
 
-        let point_value: f64 = nodes
-            .iter()
-            .zip(weights.iter())
-            .map(|(&x, &w)| w * f(x))
-            .sum();
+        let (nodes, weights) = rule.transported(xi.inf(), xi1.sup())?;
 
-        let sub = interval!(xi, xi1).unwrap();
+        let mut point_value = ZERO;
 
-        let c_n = rule.c_n(xi, xi1);
+        for (&x, &w) in nodes.iter().zip(weights.iter()) {
+            point_value += w * f(x);
+        }
 
-        let coeff = interval!(c_n / fact_2n, c_n / fact_2n).unwrap();
+        let sub = interval!(xi.inf(), xi1.sup())?;
+
+        let c_n = rule.c_n(xi.inf(), xi1.sup());
+
+        let coeff = interval!(c_n / fact_2n, c_n / fact_2n)?;
 
         let error_term = f_2n(sub) * coeff;
 
-        let point_interval = interval!(point_value, point_value).unwrap();
-
-        acc = acc + point_interval + error_term;
+        acc += point_value + error_term;
     }
 
-    acc
+    Ok(acc)
 }
 
-/// Gauss-Legendre quadrature rule: nodes/weights on [-1,1] via Golub-Welsch.
+/// Gauss-Legendre quadrature rule:
+/// nodes and weights on [-1,1] via Golub-Welsch.
 pub struct GaussLegendreRule {
     order: usize,
     nodes: Vec<f64>,
@@ -240,7 +314,8 @@ impl GaussianRule for GaussLegendreRule {
     }
 }
 
-/// Gauss-Legendre quadrature with certified 2n-th derivative error term.
+/// Gauss-Legendre quadrature with certified 2n-th
+/// derivative error term.
 pub fn gauss_legendre_certified<F, F2N>(
     rule: &GaussLegendreRule,
     f: F,
@@ -248,9 +323,9 @@ pub fn gauss_legendre_certified<F, F2N>(
     a: f64,
     b: f64,
     n: u32,
-) -> Interval
+) -> Result<Interval, IntervalError>
 where
-    F: Fn(f64) -> f64,
+    F: Fn(Interval) -> Interval,
     F2N: Fn(Interval) -> Interval,
 {
     gaussian_certified(rule, f, f_2n, a, b, n)
