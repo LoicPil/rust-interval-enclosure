@@ -4,10 +4,10 @@ use nalgebra::{DMatrix, SymmetricEigen};
 const ONE: Interval = const_interval!(1.0, 1.0);
 const ZERO: Interval = const_interval!(0.0, 0.0);
 const TWO: Interval = const_interval!(2.0, 2.0);
-const TWENTY_FOUR: Interval = const_interval!(24.0, 24.0);
-const TWELVE: Interval = const_interval!(12.0, 12.0);
-const SIX: Interval = const_interval!(6.0, 6.0);
 const FOUR: Interval = const_interval!(4.0, 4.0);
+const SIX: Interval = const_interval!(6.0, 6.0);
+const TWELVE: Interval = const_interval!(12.0, 12.0);
+const TWENTY_FOUR: Interval = const_interval!(24.0, 24.0);
 const TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY: Interval = const_interval!(2880.0, 2880.0);
 
 /// Midpoint rule with certified second-derivative error term.
