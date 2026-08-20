@@ -10,11 +10,18 @@ const TWELVE: Interval = const_interval!(12.0, 12.0);
 const TWENTY_FOUR: Interval = const_interval!(24.0, 24.0);
 const TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY: Interval = const_interval!(2880.0, 2880.0);
 
-/// Midpoint rule with certified second-derivative error term.
-///
-/// Per subinterval [x_i, x_i+h]:
-///
-/// h f((x_i+x_{i+1})/2) + h^3/24 * f''([x_i,x_{i+1}])
+fn pairwise_sum(intervals: &[Interval]) -> Interval {
+    match intervals.len() {
+        0 => ZERO,
+        1 => intervals[0],
+        _ => {
+            let mid = intervals.len() / 2;
+            pairwise_sum(&intervals[..mid]) + pairwise_sum(&intervals[mid..])
+        }
+    }
+}
+
+/// Computes a certified midpoint quadrature enclosure.
 pub fn midpoint_certified<F, FPP>(
     f: F,
     f_pp: FPP,
@@ -31,13 +38,15 @@ where
     let i_n = interval!(n as f64, n as f64)?;
 
     let h = (ib - ia) / i_n;
-    let mut acc = ZERO;
+    let mut contributions = Vec::with_capacity(n as usize);
 
     for i in 0..n {
         let ii = interval!(i as f64, i as f64)?;
+        let ii1 = interval!((i + 1) as f64, (i + 1) as f64)?;
 
-        let xi = ia + ii * h;
-        let xi1 = ia + (ii + ONE) * h;
+        let xi = if i == 0 { ia } else { ia + ii * h };
+        let xi1 = if i + 1 == n { ib } else { ia + ii1 * h };
+
         let mid = (xi + xi1) / TWO;
 
         let point_value = f(mid) * h;
@@ -47,18 +56,13 @@ where
         let coeff = h.powi(3) / TWENTY_FOUR;
         let error_term = f_pp(sub) * coeff;
 
-        acc += point_value + error_term;
+        contributions.push(point_value + error_term);
     }
 
-    Ok(acc)
+    Ok(pairwise_sum(&contributions))
 }
 
-/// Trapezoidal rule with certified second-derivative error term.
-///
-/// Per subinterval [x_i,x_i+h]:
-///
-/// h/2 (f(x_i)+f(x_{i+1}))
-///     - h^3/12 * f''([x_i,x_{i+1}])
+/// Computes a certified trapezoidal quadrature enclosure.
 pub fn trapezoidal_certified<F, FPP>(
     f: F,
     f_pp: FPP,
@@ -75,13 +79,14 @@ where
     let i_n = interval!(n as f64, n as f64)?;
 
     let h = (ib - ia) / i_n;
-    let mut acc = ZERO;
+    let mut contributions = Vec::with_capacity(n as usize);
 
     for i in 0..n {
         let ii = interval!(i as f64, i as f64)?;
+        let ii1 = interval!((i + 1) as f64, (i + 1) as f64)?;
 
-        let xi = ia + ii * h;
-        let xi1 = ia + (ii + ONE) * h;
+        let xi = if i == 0 { ia } else { ia + ii * h };
+        let xi1 = if i + 1 == n { ib } else { ia + ii1 * h };
 
         let point_value = (h / TWO) * (f(xi) + f(xi1));
 
@@ -90,18 +95,13 @@ where
         let coeff = h.powi(3) / TWELVE;
         let error_term = f_pp(sub) * coeff;
 
-        acc += point_value - error_term;
+        contributions.push(point_value - error_term);
     }
 
-    Ok(acc)
+    Ok(pairwise_sum(&contributions))
 }
 
-/// Simpson's rule with certified fourth-derivative error term.
-///
-/// Per subinterval [x_i,x_i+h]:
-///
-/// h/6 (f(x_i) + 4f(mid) + f(x_{i+1}))
-///     - h^5/2880 * f''''([x_i,x_{i+1}])
+/// Computes a certified Simpson quadrature enclosure.
 pub fn simpson_certified<F, F4>(
     f: F,
     f_4: F4,
@@ -118,13 +118,15 @@ where
     let i_n = interval!(n as f64, n as f64)?;
 
     let h = (ib - ia) / i_n;
-    let mut acc = ZERO;
+    let mut contributions = Vec::with_capacity(n as usize);
 
     for i in 0..n {
         let ii = interval!(i as f64, i as f64)?;
+        let ii1 = interval!((i + 1) as f64, (i + 1) as f64)?;
 
-        let xi = ia + ii * h;
-        let xi1 = ia + (ii + ONE) * h;
+        let xi = if i == 0 { ia } else { ia + ii * h };
+        let xi1 = if i + 1 == n { ib } else { ia + ii1 * h };
+
         let mid = (xi + xi1) / TWO;
 
         let point_value = (h / SIX) * (f(xi) + FOUR * f(mid) + f(xi1));
@@ -134,22 +136,30 @@ where
         let coeff = h.powi(5) / TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY;
         let error_term = f_4(sub) * coeff;
 
-        acc += point_value - error_term;
+        contributions.push(point_value - error_term);
     }
 
-    Ok(acc)
+    Ok(pairwise_sum(&contributions))
 }
 
-/// Generic Gaussian quadrature rule on [-1,1].
+/// Defines a Gaussian quadrature rule.
 pub trait GaussianRule {
     fn order(&self) -> usize;
-    fn nodes(&self) -> &[f64];
-    fn weights(&self) -> &[f64];
-    fn c_n(&self, a: f64, b: f64) -> f64;
 
-    fn transported(&self, a: f64, b: f64) -> Result<(Vec<Interval>, Vec<Interval>), IntervalError> {
-        let half = interval!((b - a) / 2.0, (b - a) / 2.0)?;
-        let mid = interval!((a + b) / 2.0, (a + b) / 2.0)?;
+    fn nodes(&self) -> &[f64];
+
+    fn weights(&self) -> &[f64];
+
+    fn c_n(&self, a: Interval, b: Interval) -> Interval;
+
+    /// Transports the rule from `[-1, 1]` to `[a, b]`.
+    fn transported(
+        &self,
+        a: Interval,
+        b: Interval,
+    ) -> Result<(Vec<Interval>, Vec<Interval>), IntervalError> {
+        let half = (b - a) / TWO;
+        let mid = (a + b) / TWO;
 
         let nodes = self
             .nodes()
@@ -173,7 +183,7 @@ pub trait GaussianRule {
     }
 }
 
-/// Generic Gaussian quadrature with certified 2n-th derivative error term.
+/// Computes a certified Gaussian quadrature enclosure.
 pub fn gaussian_certified<R, F, F2N>(
     rule: &R,
     f: F,
@@ -194,44 +204,46 @@ where
     let h = (ib - ia) / i_n;
     let two_n = 2 * rule.order();
 
-    let mut fact_2n = 1.0_f64;
+    let mut fact_2n = ONE;
 
     for k in 1..=two_n {
-        fact_2n *= k as f64;
+        fact_2n = fact_2n * interval!(k as f64, k as f64)?;
     }
 
-    let mut acc = ZERO;
+    let mut contributions = Vec::with_capacity(n as usize);
 
     for i in 0..n {
         let ii = interval!(i as f64, i as f64)?;
+        let ii1 = interval!((i + 1) as f64, (i + 1) as f64)?;
 
-        let xi = ia + ii * h;
-        let xi1 = ia + (ii + ONE) * h;
+        let xi = if i == 0 { ia } else { ia + ii * h };
+        let xi1 = if i + 1 == n { ib } else { ia + ii1 * h };
 
-        let (nodes, weights) = rule.transported(xi.inf(), xi1.sup())?;
+        let (nodes, weights) = rule.transported(xi, xi1)?;
 
-        let mut point_value = ZERO;
+        let mut point_terms = Vec::with_capacity(nodes.len());
 
         for (&x, &w) in nodes.iter().zip(weights.iter()) {
-            point_value += w * f(x);
+            point_terms.push(w * f(x));
         }
+
+        let point_value = pairwise_sum(&point_terms);
 
         let sub = interval!(xi.inf(), xi1.sup())?;
 
-        let c_n = rule.c_n(xi.inf(), xi1.sup());
+        let c_n = rule.c_n(xi, xi1);
+        let coeff = c_n / fact_2n;
 
-        let coeff = interval!(c_n / fact_2n, c_n / fact_2n)?;
+        let derivative = f_2n(sub);
+        let error_term = derivative * coeff;
 
-        let error_term = f_2n(sub) * coeff;
-
-        acc += point_value + error_term;
+        contributions.push(point_value + error_term);
     }
 
-    Ok(acc)
+    Ok(pairwise_sum(&contributions))
 }
 
-/// Gauss-Legendre quadrature rule:
-/// nodes and weights on [-1,1] via Golub-Welsch.
+/// Stores a Gauss-Legendre quadrature rule.
 pub struct GaussLegendreRule {
     order: usize,
     nodes: Vec<f64>,
@@ -239,18 +251,29 @@ pub struct GaussLegendreRule {
 }
 
 impl GaussLegendreRule {
+    /// Constructs a Gauss-Legendre rule.
+    ///
+    /// DLMF values are used for orders 5, 10 and 20.
+    /// Other orders are computed using the Golub-Welsch algorithm.
     pub fn new(order: usize) -> Self {
         assert!(order >= 1);
 
+        match order {
+            5 => Self::from_dlmf(5),
+            10 => Self::from_dlmf(10),
+            20 => Self::from_dlmf(20),
+            _ => Self::from_golub_welsch(order),
+        }
+    }
+
+    fn from_golub_welsch(order: usize) -> Self {
         let beta0 = 2.0;
 
         let mut jacobi = DMatrix::<f64>::zeros(order, order);
 
         for k in 1..order {
             let kf = k as f64;
-
             let beta_k = kf.powi(2) / (4.0 * kf.powi(2) - 1.0);
-
             let off = beta_k.sqrt();
 
             jacobi[(k, k - 1)] = off;
@@ -262,7 +285,6 @@ impl GaussLegendreRule {
         let mut pairs: Vec<(f64, f64)> = (0..order)
             .map(|i| {
                 let node = eig.eigenvalues[i];
-
                 let v0 = eig.eigenvectors[(0, i)];
 
                 (node, beta0 * v0 * v0)
@@ -275,6 +297,106 @@ impl GaussLegendreRule {
             order,
             nodes: pairs.iter().map(|p| p.0).collect(),
             weights: pairs.iter().map(|p| p.1).collect(),
+        }
+    }
+
+    fn from_dlmf(order: usize) -> Self {
+        let (nodes, weights): (&[f64], &[f64]) = match order {
+            5 => (
+                &[
+                    -0.9061798459386640,
+                    -0.5384693101056831,
+                    0.0,
+                    0.5384693101056831,
+                    0.9061798459386640,
+                ],
+                &[
+                    0.2369268850561891,
+                    0.4786286704993665,
+                    0.5688888888888889,
+                    0.4786286704993665,
+                    0.2369268850561891,
+                ],
+            ),
+            10 => (
+                &[
+                    -0.9739065285171717,
+                    -0.8650633666889845,
+                    -0.6794095682990244,
+                    -0.4333953941292472,
+                    -0.1488743389816312,
+                    0.1488743389816312,
+                    0.4333953941292472,
+                    0.6794095682990244,
+                    0.8650633666889845,
+                    0.9739065285171717,
+                ],
+                &[
+                    0.0666713443086881,
+                    0.1494513491505806,
+                    0.2190863625159820,
+                    0.2692667193099963,
+                    0.2955242247147529,
+                    0.2955242247147529,
+                    0.2692667193099963,
+                    0.2190863625159820,
+                    0.1494513491505806,
+                    0.0666713443086881,
+                ],
+            ),
+            20 => (
+                &[
+                    -0.9931285991850949,
+                    -0.9639719272779138,
+                    -0.9122344282513259,
+                    -0.8391169718222188,
+                    -0.7463319064601508,
+                    -0.6360536807265150,
+                    -0.5108670019508271,
+                    -0.3737060887154196,
+                    -0.2277858511416451,
+                    -0.0765265211334973,
+                    0.0765265211334973,
+                    0.2277858511416451,
+                    0.3737060887154196,
+                    0.5108670019508271,
+                    0.6360536807265150,
+                    0.7463319064601508,
+                    0.8391169718222188,
+                    0.9122344282513259,
+                    0.9639719272779138,
+                    0.9931285991850949,
+                ],
+                &[
+                    0.0176140071391521,
+                    0.0406014298190927,
+                    0.0626720483341091,
+                    0.0832767415767047,
+                    0.1019301198172404,
+                    0.1181945319615184,
+                    0.1316886384491766,
+                    0.1420961093183821,
+                    0.1491729864726037,
+                    0.1527533871307259,
+                    0.1527533871307259,
+                    0.1491729864726037,
+                    0.1420961093183821,
+                    0.1316886384491766,
+                    0.1181945319615184,
+                    0.1019301198172404,
+                    0.0832767415767047,
+                    0.0626720483341091,
+                    0.0406014298190927,
+                    0.0176140071391521,
+                ],
+            ),
+            _ => unreachable!(),
+        };
+
+        Self {
+            order,
+            nodes: nodes.to_vec(),
+            weights: weights.to_vec(),
         }
     }
 }
@@ -292,30 +414,37 @@ impl GaussianRule for GaussLegendreRule {
         &self.weights
     }
 
-    fn c_n(&self, a: f64, b: f64) -> f64 {
-        let n = self.order as f64;
-        let half = (b - a) / 2.0;
+    fn c_n(&self, a: Interval, b: Interval) -> Interval {
+        let n = self.order;
 
-        let mut fact_n = 1.0_f64;
+        let half = (b - a) / TWO;
 
-        for k in 1..=self.order {
-            fact_n *= k as f64;
+        let mut fact_n = ONE;
+
+        for k in 1..=n {
+            fact_n = fact_n * interval!(k as f64, k as f64).unwrap();
         }
 
-        let mut fact_2n = 1.0_f64;
+        let mut fact_2n = ONE;
 
-        for k in 1..=(2 * self.order) {
-            fact_2n *= k as f64;
+        for k in 1..=(2 * n) {
+            fact_2n = fact_2n * interval!(k as f64, k as f64).unwrap();
         }
 
-        let k_n_inv = 2f64.powf(n) * fact_n * fact_n / fact_2n;
+        let two_pow_n = TWO.powi(n as i32);
 
-        half.powf(2.0 * n + 1.0) * (2.0 / (2.0 * n + 1.0)) * k_n_inv * k_n_inv
+        let k_n_inv = two_pow_n * fact_n * fact_n / fact_2n;
+
+        let exponent = (2 * n + 1) as i32;
+
+        half.powi(exponent)
+            * (TWO / interval!((2 * n + 1) as f64, (2 * n + 1) as f64).unwrap())
+            * k_n_inv
+            * k_n_inv
     }
 }
 
-/// Gauss-Legendre quadrature with certified 2n-th
-/// derivative error term.
+/// Computes a certified Gauss-Legendre quadrature enclosure.
 pub fn gauss_legendre_certified<F, F2N>(
     rule: &GaussLegendreRule,
     f: F,
@@ -329,4 +458,233 @@ where
     F2N: Fn(Interval) -> Interval,
 {
     gaussian_certified(rule, f, f_2n, a, b, n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    fn contains(x: f64, interval: Interval) -> bool {
+        interval.inf() <= x && x <= interval.sup()
+    }
+
+    #[test]
+    fn test_constant() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result = gauss_legendre_certified(
+            &rule,
+            |_| interval!(1.0, 1.0).unwrap(),
+            |_| interval!(0.0, 0.0).unwrap(),
+            0.0,
+            1.0,
+            1,
+        )
+        .unwrap();
+
+        println!("result = {}", result);
+
+        assert!(contains(1.0, result));
+    }
+
+    #[test]
+    fn test_linear() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result =
+            gauss_legendre_certified(&rule, |x| x, |_| interval!(0.0, 0.0).unwrap(), 0.0, 1.0, 1)
+                .unwrap();
+
+        println!("result = {}", result);
+
+        assert!(contains(0.5, result));
+    }
+
+    #[test]
+    fn test_quadratic() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result = gauss_legendre_certified(
+            &rule,
+            |x| x * x,
+            |_| interval!(0.0, 0.0).unwrap(),
+            0.0,
+            1.0,
+            1,
+        )
+        .unwrap();
+
+        assert!(contains(1.0 / 3.0, result));
+    }
+
+    #[test]
+    fn test_cubic() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result = gauss_legendre_certified(
+            &rule,
+            |x| x.powi(3),
+            |_| interval!(0.0, 0.0).unwrap(),
+            0.0,
+            1.0,
+            1,
+        )
+        .unwrap();
+
+        assert!(contains(1.0 / 4.0, result));
+    }
+
+    #[test]
+    fn test_x5() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result = gauss_legendre_certified(
+            &rule,
+            |x| x.powi(5),
+            |_| interval!(0.0, 0.0).unwrap(),
+            0.0,
+            1.0,
+            1,
+        )
+        .unwrap();
+
+        println!("result = {}", result);
+
+        assert!(contains(1.0 / 6.0, result));
+    }
+
+    #[test]
+    fn test_x6() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result = gauss_legendre_certified(
+            &rule,
+            |x| x.powi(6),
+            |_| interval!(0.0, 0.0).unwrap(),
+            0.0,
+            1.0,
+            1,
+        )
+        .unwrap();
+
+        println!("result = {}", result);
+
+        assert!(contains(1.0 / 7.0, result));
+    }
+
+    #[test]
+    fn test_exponential() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result =
+            gauss_legendre_certified(&rule, |x| x.exp(), |x| x.exp(), 0.0, 1.0, 1).unwrap();
+
+        assert!(contains(std::f64::consts::E - 1.0, result));
+    }
+
+    #[test]
+    fn test_sine() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result =
+            gauss_legendre_certified(&rule, |x| x.sin(), |x| -x.sin(), 0.0, PI, 1).unwrap();
+
+        assert!(contains(2.0, result));
+    }
+
+    #[test]
+    fn test_transport() {
+        let rule = GaussLegendreRule::new(5);
+
+        let a = interval!(0.0, 0.0).unwrap();
+        let b = interval!(1.0, 1.0).unwrap();
+
+        let (nodes, weights) = rule.transported(a, b).unwrap();
+
+        let result = pairwise_sum(
+            &nodes
+                .iter()
+                .zip(weights.iter())
+                .map(|(&x, &w)| w * x.powi(5))
+                .collect::<Vec<_>>(),
+        );
+
+        println!("result = {}", result);
+
+        assert!(contains(1.0 / 6.0, result));
+    }
+
+    #[test]
+    fn test_midpoint_constant() {
+        let result = midpoint_certified(
+            |_| interval!(1.0, 1.0).unwrap(),
+            |_| interval!(0.0, 0.0).unwrap(),
+            0.0,
+            1.0,
+            10,
+        )
+        .unwrap();
+
+        assert!(contains(1.0, result));
+    }
+
+    #[test]
+    fn test_midpoint_quadratic() {
+        let result =
+            midpoint_certified(|x| x * x, |_| interval!(2.0, 2.0).unwrap(), 0.0, 1.0, 10).unwrap();
+
+        assert!(contains(1.0 / 3.0, result));
+    }
+
+    #[test]
+    fn test_trapezoidal_constant() {
+        let result = trapezoidal_certified(
+            |_| interval!(1.0, 1.0).unwrap(),
+            |_| interval!(0.0, 0.0).unwrap(),
+            0.0,
+            1.0,
+            10,
+        )
+        .unwrap();
+
+        assert!(contains(1.0, result));
+    }
+
+    #[test]
+    fn test_trapezoidal_quadratic() {
+        let result =
+            trapezoidal_certified(|x| x * x, |_| interval!(2.0, 2.0).unwrap(), 0.0, 1.0, 10)
+                .unwrap();
+
+        assert!(contains(1.0 / 3.0, result));
+    }
+
+    #[test]
+    fn test_simpson_constant() {
+        let result = simpson_certified(
+            |_| interval!(1.0, 1.0).unwrap(),
+            |_| interval!(0.0, 0.0).unwrap(),
+            0.0,
+            1.0,
+            10,
+        )
+        .unwrap();
+
+        assert!(contains(1.0, result));
+    }
+
+    #[test]
+    fn test_simpson_quartic() {
+        let result = simpson_certified(
+            |x| x.powi(4),
+            |_| interval!(24.0, 24.0).unwrap(),
+            0.0,
+            1.0,
+            10,
+        )
+        .unwrap();
+
+        assert!(contains(1.0 / 5.0, result));
+    }
 }

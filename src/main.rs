@@ -3,7 +3,7 @@
 use inari::{Interval, const_interval, interval};
 
 use interval_enclosure::integration::{
-    GaussLegendreRule, gaussian_certified, midpoint_certified, simpson_certified,
+    GaussLegendreRule, GaussianRule, gaussian_certified, midpoint_certified, simpson_certified,
     trapezoidal_certified,
 };
 
@@ -109,7 +109,6 @@ fn run_gauss_demo() -> Result<(), Box<dyn std::error::Error>> {
     let exact = 2.0 / pi;
 
     let order = 4usize;
-
     let subdivisions = 1;
 
     let rule = GaussLegendreRule::new(order);
@@ -136,7 +135,6 @@ fn run_gauss_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("===== Gauss-Legendre demo =====");
 
     println!("order m        = {}", order);
-
     println!("subdivisions   = {}", subdivisions);
 
     println!(
@@ -146,9 +144,7 @@ fn run_gauss_demo() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!("width          = {:.6e}", width);
-
     println!("exact          = {:.15e}", exact);
-
     println!("contains exact = {}", contains_exact);
 
     Ok(())
@@ -182,20 +178,14 @@ fn run_quadrature_convergence() -> Result<(), Box<dyn std::error::Error>> {
     let n_values: Vec<u32> = vec![2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 
     let mut ns = Vec::new();
-
     let mut errors_mid = Vec::new();
-
     let mut errors_trap = Vec::new();
-
     let mut errors_simp = Vec::new();
-
     let mut errors_gauss = Vec::new();
 
     println!();
     println!("===== Quadrature convergence =====");
-
     println!("Gauss-Legendre order = {}", gauss_order);
-
     println!();
 
     for &n in &n_values {
@@ -207,13 +197,10 @@ fn run_quadrature_convergence() -> Result<(), Box<dyn std::error::Error>> {
 
         let result_gauss = gaussian_certified(&gauss_rule, f, f_2m, 0.0, 1.0, n)?;
 
-        let width_mid = result_mid.sup() - result_mid.inf();
-
-        let width_trap = result_trap.sup() - result_trap.inf();
-
-        let width_simp = result_simp.sup() - result_simp.inf();
-
-        let width_gauss = result_gauss.sup() - result_gauss.inf();
+        let width_mid = result_mid.wid();
+        let width_trap = result_trap.wid();
+        let width_simp = result_simp.wid();
+        let width_gauss = result_gauss.wid();
 
         println!(
             "n={:4} | mid={:.3e} | trap={:.3e} | simp={:.3e} | gauss={:.3e}",
@@ -305,7 +292,7 @@ fn run_gauss_orders() -> Result<(), Box<dyn std::error::Error>> {
 
             let result = gaussian_certified(&rule, f, f_2m, 0.0, 1.0, subdivisions)?;
 
-            widths.push(result.sup() - result.inf());
+            widths.push(result.wid());
         }
 
         all_widths.push(widths);
@@ -313,7 +300,6 @@ fn run_gauss_orders() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
     println!("===== Gauss-Legendre order convergence =====");
-
     println!();
 
     for (i, &subdivisions) in subdivisions_values.iter().enumerate() {
@@ -339,7 +325,6 @@ fn run_gauss_orders() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ax.set_xlabel("Gauss-Legendre order $m$");
-
     ax.set_ylabel("interval width");
 
     ax.set_xscale("linear");
@@ -353,13 +338,15 @@ fn run_gauss_orders() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-// Assuming W(h) ≈ C h^p, we have ln(W) ≈ ln(C) + p ln(h).
-// The convergence rate p is therefore estimated as the slope
-// of the least-squares linear regression of ln(W) against ln(h).
+
+/// Assuming W(h) ≈ C h^p, we have ln(W) ≈ ln(C) + p ln(h).
+/// The convergence rate p is therefore estimated as the slope
+/// of the least-squares linear regression of ln(W) against ln(h).
 fn convergence_rate(hs: &[f64], widths: &[f64]) -> f64 {
     let n = hs.len() as f64;
 
     let xs: Vec<f64> = hs.iter().map(|&h| h.ln()).collect();
+
     let ys: Vec<f64> = widths.iter().map(|&w| w.ln()).collect();
 
     let sum_x: f64 = xs.iter().sum();
@@ -371,10 +358,11 @@ fn convergence_rate(hs: &[f64], widths: &[f64]) -> f64 {
 
     (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x * sum_x)
 }
+
 fn run_gauss_convergence_rates() -> Result<(), Box<dyn std::error::Error>> {
     let orders: Vec<usize> = (1..=7).collect();
 
-    let n_values: Vec<u32> = vec![2, 4, 8, 16, 32];
+    let n_values: Vec<u32> = vec![2, 5, 10];
 
     let f = |x: Interval| -> Interval { (PI * x).sin() };
 
@@ -402,7 +390,7 @@ fn run_gauss_convergence_rates() -> Result<(), Box<dyn std::error::Error>> {
             let result = gaussian_certified(&rule, f, f_2m, 0.0, 1.0, n)?;
 
             hs.push(1.0 / n as f64);
-            widths.push(result.sup() - result.inf());
+            widths.push(result.wid());
         }
 
         let rate = convergence_rate(&hs, &widths);
@@ -413,15 +401,239 @@ fn run_gauss_convergence_rates() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn print_gauss_legendre(order: usize) {
+    let rule = GaussLegendreRule::new(order);
+
+    println!();
+    println!("===== Gauss-Legendre rule m = {} =====", order);
+
+    for i in 0..order {
+        println!(
+            "i = {:2} | node = {:.16e} | weight = {:.16e}",
+            i,
+            rule.nodes()[i],
+            rule.weights()[i]
+        );
+    }
+}
+
+fn check_gauss_legendre(order: usize) {
+    let rule = GaussLegendreRule::new(order);
+
+    let (reference_nodes, reference_weights): (&[f64], &[f64]) = match order {
+        5 => (
+            &[
+                -0.9061798459386640,
+                -0.5384693101056831,
+                0.0,
+                0.5384693101056831,
+                0.9061798459386640,
+            ],
+            &[
+                0.2369268850561891,
+                0.4786286704993665,
+                0.5688888888888889,
+                0.4786286704993665,
+                0.2369268850561891,
+            ],
+        ),
+
+        10 => (
+            &[
+                -0.9739065285171717,
+                -0.8650633666889845,
+                -0.6794095682990244,
+                -0.4333953941292472,
+                -0.1488743389816312,
+                0.1488743389816312,
+                0.4333953941292472,
+                0.6794095682990244,
+                0.8650633666889845,
+                0.9739065285171717,
+            ],
+            &[
+                0.0666713443086881,
+                0.1494513491505806,
+                0.2190863625159820,
+                0.2692667193099963,
+                0.2955242247147529,
+                0.2955242247147529,
+                0.2692667193099963,
+                0.2190863625159820,
+                0.1494513491505806,
+                0.0666713443086881,
+            ],
+        ),
+
+        20 => (
+            &[
+                -0.9931285991850949,
+                -0.9639719272779138,
+                -0.9122344282513259,
+                -0.8391169718222188,
+                -0.7463319064601508,
+                -0.6360536807265150,
+                -0.5108670019508271,
+                -0.3737060887154195,
+                -0.2277858511416451,
+                -0.0765265211334973,
+                0.0765265211334973,
+                0.2277858511416451,
+                0.3737060887154195,
+                0.5108670019508271,
+                0.6360536807265150,
+                0.7463319064601508,
+                0.8391169718222188,
+                0.9122344282513259,
+                0.9639719272779138,
+                0.9931285991850949,
+            ],
+            &[
+                0.0176140071391521,
+                0.0406014298003869,
+                0.0626720483341091,
+                0.0832767415767047,
+                0.1019301198172404,
+                0.1181945319615184,
+                0.1316886384491766,
+                0.1420961091852,
+                0.1491729864726037,
+                0.1527533871307259,
+                0.1527533871307259,
+                0.1491729864726037,
+                0.1420961091852,
+                0.1316886384491766,
+                0.1181945319615184,
+                0.1019301198172404,
+                0.0832767415767047,
+                0.0626720483341091,
+                0.0406014297993869,
+                0.0176140071391521,
+            ],
+        ),
+
+        _ => {
+            println!("Reference values are available only for m = 5, 10, 20.");
+            return;
+        }
+    };
+
+    println!();
+    println!("===== Gauss-Legendre validation m = {} =====", order);
+
+    let mut max_node_error: f64 = 0.0;
+    let mut max_weight_error: f64 = 0.0;
+
+    for i in 0..order {
+        let node_error = (rule.nodes()[i] - reference_nodes[i]).abs();
+
+        let weight_error = (rule.weights()[i] - reference_weights[i]).abs();
+
+        max_node_error = max_node_error.max(node_error);
+        max_weight_error = max_weight_error.max(weight_error);
+
+        println!(
+            "i = {:2} | node error = {:.3e} | weight error = {:.3e}",
+            i, node_error, weight_error
+        );
+    }
+
+    println!();
+    println!("maximum node error   = {:.3e}", max_node_error);
+
+    println!("maximum weight error = {:.3e}", max_weight_error);
+}
+
+fn run_gauss_width_vs_h() -> Result<(), Box<dyn std::error::Error>> {
+    let orders: Vec<usize> = (1..=10).collect();
+
+    let n_values: Vec<u32> = vec![1, 2, 4, 8, 16, 32, 64, 128, 256];
+
+    let f = |x: Interval| -> Interval { (PI * x).sin() };
+
+    println!();
+    println!("===== Gauss-Legendre interval width vs h =====");
+    println!();
+
+    let mut all_hs: Vec<Vec<f64>> = Vec::new();
+    let mut all_widths: Vec<Vec<f64>> = Vec::new();
+
+    for &order in &orders {
+        let rule = GaussLegendreRule::new(order);
+
+        let mut hs = Vec::new();
+        let mut widths = Vec::new();
+
+        for &n in &n_values {
+            let f_2m = |x: Interval| -> Interval {
+                let coeff = PI.powi((2 * order) as i32);
+
+                if order % 2 == 0 {
+                    coeff * (PI * x).sin()
+                } else {
+                    -coeff * (PI * x).sin()
+                }
+            };
+
+            let result = gaussian_certified(&rule, f, f_2m, 0.0, 1.0, n)?;
+
+            let h = 1.0 / n as f64;
+            let width = result.wid();
+
+            hs.push(h);
+            widths.push(width);
+        }
+
+        all_hs.push(hs);
+        all_widths.push(widths);
+    }
+
+    let (fig, [[mut ax]]) = subplots()?;
+
+    let formats = ["o-", "s-", "^-", "D-", "v-", "<-", ">-", "p-", "h-", "*-"];
+
+    for (i, &order) in orders.iter().enumerate() {
+        ax.xy(&all_hs[i], &all_widths[i])
+            .fmt(formats[i])
+            .markersize(7.0)
+            .label(&format!("m = {}", order))
+            .plot();
+    }
+
+    ax.set_xlabel("$h$");
+    ax.set_ylabel("interval width");
+
+    ax.set_xscale("log");
+    ax.set_yscale("log");
+
+    ax.grid();
+    ax.minorticks_on();
+    ax.legend(std::iter::empty());
+
+    fig.save().to_file("gauss_width_vs_h.pdf")?;
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // run_convergence_graph()?;
     //
     // run_midpoint_demo()?;
+    //
+    // run_gauss_demo()?;
+    //
+    // run_quadrature_convergence()?;
+    // run_gauss_orders()?;
 
-    run_gauss_demo()?;
-
-    run_quadrature_convergence()?;
-    run_gauss_orders()?;
     run_gauss_convergence_rates()?;
+
+    print_gauss_legendre(5);
+    print_gauss_legendre(10);
+
+    check_gauss_legendre(5);
+    check_gauss_legendre(10);
+
+    run_gauss_width_vs_h()?;
+
     Ok(())
 }
