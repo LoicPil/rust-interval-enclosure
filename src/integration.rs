@@ -507,7 +507,7 @@ mod tests {
 
         let result = gauss_legendre_certified(
             &rule,
-            |x| x * x,
+            |x| x.sqr(),
             |_| interval!(0.0, 0.0).unwrap(),
             0.0,
             1.0,
@@ -571,6 +571,25 @@ mod tests {
         println!("result = {}", result);
 
         assert!(contains(1.0 / 7.0, result));
+    }
+
+    #[test]
+    fn test_x10() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result = gauss_legendre_certified(
+            &rule,
+            |x| x.powi(10),
+            |_| interval!(3628800.0, 3628800.0).unwrap(),
+            0.0,
+            1.0,
+            1,
+        )
+        .unwrap();
+
+        println!("result = {}", result);
+
+        assert!(contains(1.0 / 11.0, result));
     }
 
     #[test]
