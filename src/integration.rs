@@ -153,6 +153,7 @@ pub trait GaussianRule {
     fn c_n(&self, a: Interval, b: Interval) -> Interval;
 
     /// Transports the rule from `[-1, 1]` to `[a, b]`.
+    ///  /// laisser les poids sur -1 1 et juste multiplier a  la fin par la taille
     fn transported(
         &self,
         a: Interval,
@@ -165,7 +166,7 @@ pub trait GaussianRule {
             .nodes()
             .iter()
             .map(|&s| {
-                let s = interval!(s, s).unwrap();
+                let s = interval!(s.next_down(), s.next_up()).unwrap();
                 mid + half * s
             })
             .collect();
@@ -173,10 +174,7 @@ pub trait GaussianRule {
         let weights = self
             .weights()
             .iter()
-            .map(|&w| {
-                let w = interval!(w, w).unwrap();
-                half * w
-            })
+            .map(|&w| interval!(w.next_down(), w.next_up()).unwrap())
             .collect();
 
         Ok((nodes, weights))
@@ -227,7 +225,9 @@ where
             point_terms.push(w * f(x));
         }
 
-        let point_value = pairwise_sum(&point_terms);
+        let sub_half = (xi1 - xi) / TWO;
+
+        let point_value = pairwise_sum(&point_terms) * sub_half;
 
         let sub = interval!(xi.inf(), xi1.sup())?;
 
@@ -465,10 +465,6 @@ mod tests {
     use super::*;
     use std::f64::consts::PI;
 
-    fn contains(x: f64, interval: Interval) -> bool {
-        interval.inf() <= x && x <= interval.sup()
-    }
-
     #[test]
     fn test_constant() {
         let rule = GaussLegendreRule::new(5);
@@ -485,7 +481,7 @@ mod tests {
 
         println!("result = {}", result);
 
-        assert!(contains(1.0, result));
+        assert!(result.contains(1.0));
     }
 
     #[test]
@@ -498,7 +494,8 @@ mod tests {
 
         println!("result = {}", result);
 
-        assert!(contains(0.5, result));
+        assert!(result.contains(0.5));
+        assert!(result.wid() <= 5e-16);
     }
 
     #[test]
@@ -515,7 +512,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(contains(1.0 / 3.0, result));
+        assert!(result.contains(1.0 / 3.0));
     }
 
     #[test]
@@ -532,7 +529,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(contains(1.0 / 4.0, result));
+        assert!(result.contains(1.0 / 4.0));
     }
 
     #[test]
@@ -551,7 +548,7 @@ mod tests {
 
         println!("result = {}", result);
 
-        assert!(contains(1.0 / 6.0, result));
+        assert!(result.contains(1.0 / 6.0));
     }
 
     #[test]
@@ -570,7 +567,7 @@ mod tests {
 
         println!("result = {}", result);
 
-        assert!(contains(1.0 / 7.0, result));
+        assert!(result.contains(1.0 / 7.0));
     }
 
     #[test]
@@ -589,7 +586,7 @@ mod tests {
 
         println!("result = {}", result);
 
-        assert!(contains(1.0 / 11.0, result));
+        assert!(result.contains(1.0 / 11.0));
     }
 
     #[test]
@@ -599,7 +596,7 @@ mod tests {
         let result =
             gauss_legendre_certified(&rule, |x| x.exp(), |x| x.exp(), 0.0, 1.0, 1).unwrap();
 
-        assert!(contains(std::f64::consts::E - 1.0, result));
+        assert!(result.contains(std::f64::consts::E - 1.0));
     }
 
     #[test]
@@ -609,29 +606,29 @@ mod tests {
         let result =
             gauss_legendre_certified(&rule, |x| x.sin(), |x| -x.sin(), 0.0, PI, 1).unwrap();
 
-        assert!(contains(2.0, result));
+        assert!(result.contains(2.0));
     }
 
     #[test]
     fn test_transport() {
         let rule = GaussLegendreRule::new(5);
-
         let a = interval!(0.0, 0.0).unwrap();
         let b = interval!(1.0, 1.0).unwrap();
-
         let (nodes, weights) = rule.transported(a, b).unwrap();
 
-        let result = pairwise_sum(
-            &nodes
-                .iter()
-                .zip(weights.iter())
-                .map(|(&x, &w)| w * x.powi(5))
-                .collect::<Vec<_>>(),
-        );
+        let half = (b - a) / TWO;
+
+        let result = half
+            * pairwise_sum(
+                &nodes
+                    .iter()
+                    .zip(weights.iter())
+                    .map(|(&x, &w)| w * x.powi(5))
+                    .collect::<Vec<_>>(),
+            );
 
         println!("result = {}", result);
-
-        assert!(contains(1.0 / 6.0, result));
+        assert!(result.contains(1.0 / 6.0));
     }
 
     #[test]
@@ -644,8 +641,7 @@ mod tests {
             10,
         )
         .unwrap();
-
-        assert!(contains(1.0, result));
+        assert!(result.contains(1.0));
     }
 
     #[test]
@@ -653,7 +649,7 @@ mod tests {
         let result =
             midpoint_certified(|x| x * x, |_| interval!(2.0, 2.0).unwrap(), 0.0, 1.0, 10).unwrap();
 
-        assert!(contains(1.0 / 3.0, result));
+        assert!(result.contains(1.0 / 3.0));
     }
 
     #[test]
@@ -667,7 +663,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(contains(1.0, result));
+        assert!(result.contains(1.0));
     }
 
     #[test]
@@ -676,7 +672,7 @@ mod tests {
             trapezoidal_certified(|x| x * x, |_| interval!(2.0, 2.0).unwrap(), 0.0, 1.0, 10)
                 .unwrap();
 
-        assert!(contains(1.0 / 3.0, result));
+        assert!(result.contains(1.0 / 3.0));
     }
 
     #[test]
@@ -690,7 +686,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(contains(1.0, result));
+        assert!(result.contains(1.0));
     }
 
     #[test]
@@ -704,6 +700,98 @@ mod tests {
         )
         .unwrap();
 
-        assert!(contains(1.0 / 5.0, result));
+        assert!(result.contains(1.0 / 5.0));
+    }
+    #[test]
+    fn test_golub_welsch_nodes_within_1ulp_of_dlmf() {
+        for &order in &[5usize, 10, 20] {
+            let gw = GaussLegendreRule::from_golub_welsch(order);
+            let dlmf = GaussLegendreRule::from_dlmf(order);
+
+            for i in 0..order {
+                let gw_node = gw.nodes[i];
+                let dlmf_node = dlmf.nodes[i];
+
+                let lo = gw_node.next_down();
+                let hi = gw_node.next_up();
+
+                let abs_err = (gw_node - dlmf_node).abs();
+
+                assert!(
+                    lo <= dlmf_node && dlmf_node <= hi,
+                    "order={} i={}: DLMF node {:.17e} vs Golub-Welsch node \
+                     {:.17e} — absolute error = {:.3e} (exceeds 1-ulp \
+                     tolerance window [{:.17e}, {:.17e}])",
+                    order,
+                    i,
+                    dlmf_node,
+                    gw_node,
+                    abs_err,
+                    lo,
+                    hi
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_golub_welsch_weights_within_1ulp_of_dlmf() {
+        for &order in &[5usize, 10, 20] {
+            let gw = GaussLegendreRule::from_golub_welsch(order);
+            let dlmf = GaussLegendreRule::from_dlmf(order);
+
+            for i in 0..order {
+                let gw_weight = gw.weights[i];
+                let dlmf_weight = dlmf.weights[i];
+
+                let lo = gw_weight.next_down();
+                let hi = gw_weight.next_up();
+
+                let abs_err = (gw_weight - dlmf_weight).abs();
+
+                assert!(
+                    lo <= dlmf_weight && dlmf_weight <= hi,
+                    "order={} i={}: DLMF weight {:.17e} vs Golub-Welsch \
+                     weight {:.17e} — absolute error = {:.3e} (exceeds \
+                     1-ulp tolerance window [{:.17e}, {:.17e}])",
+                    order,
+                    i,
+                    dlmf_weight,
+                    gw_weight,
+                    abs_err,
+                    lo,
+                    hi
+                );
+            }
+        }
+    }
+    #[test]
+    fn test_golub_welsch_encloses_exact_value() {
+        for &order in &[5usize, 10, 20] {
+            let rule = GaussLegendreRule::from_golub_welsch(order);
+
+            let f = |x: Interval| -> Interval { x.powi(5) };
+            let f_2n = |_x: Interval| -> Interval { ZERO };
+
+            let result = gauss_legendre_certified(&rule, f, f_2n, 0.0, 1.0, 1).unwrap();
+
+            let exact = 1.0 / 6.0;
+
+            println!(
+                "order = {:2} | result = [{:.17e}, {:.17e}] | encloses exact = {}",
+                order,
+                result.inf(),
+                result.sup(),
+                result.contains(exact)
+            );
+
+            assert!(
+                result.contains(exact),
+                "order={}: result {} does not enclose exact value {}",
+                order,
+                result,
+                exact
+            );
+        }
     }
 }
