@@ -1,6 +1,7 @@
 use core::f64;
 use inari::{Interval, interval};
 
+pub mod adaptative_integration;
 pub mod integration;
 pub mod matrix;
 pub mod wilkinson;
@@ -76,4 +77,57 @@ pub fn hausdorff_nested(inner: Interval, outer: Interval) -> f64 {
     let d_lo = (inner.inf() - outer.inf()).abs();
     let d_hi = (outer.sup() - inner.sup()).abs();
     d_lo.max(d_hi)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    #[test]
+    fn compare_midpoint_methods() {
+        let adaptive = crate::adaptative_integration::adaptive_integration(
+            |x: Interval| x.sin(),
+            crate::adaptative_integration::Midpoint {
+                // Pour f(x) = sin(x), f''(x) = -sin(x)
+                f_pp: |x: Interval| -x.sin(),
+            },
+            0.0,
+            PI,
+            1e-10,
+            10_000,
+        )
+        .unwrap();
+
+        let uniform = crate::integration::midpoint_certified(
+            |x: Interval| x.sin(),
+            |x: Interval| x.sin(),
+            0.0,
+            PI,
+            1000,
+        )
+        .unwrap();
+
+        let adaptive_width = adaptive.wid();
+        let uniform_width = uniform.wid();
+
+        println!("Enclosure adaptative : {}", adaptive);
+        println!("Largeur adaptative   : {:.20e}", adaptive_width);
+
+        println!("Enclosure uniforme   : {}", uniform);
+        println!("Largeur uniforme     : {:.20e}", uniform_width);
+
+        println!(
+            "Différence de largeur : {:.20e}",
+            uniform_width - adaptive_width
+        );
+
+        assert!(
+            adaptive_width < uniform_width,
+            "La méthode adaptative n'est pas meilleure : \
+             largeur adaptative = {:.20e}, \
+             largeur uniforme = {:.20e}",
+            adaptive_width,
+            uniform_width
+        );
+    }
 }
