@@ -153,7 +153,7 @@ pub trait GaussianRule {
     fn c_n(&self, a: Interval, b: Interval) -> Interval;
 
     /// Transports the rule from `[-1, 1]` to `[a, b]`.
-    ///  /// laisser les poids sur -1 1 et juste multiplier a  la fin par la taille
+    /// laisser les poids sur -1 1 et juste multiplier a  la fin par la taille
     fn transported(
         &self,
         a: Interval,
@@ -195,17 +195,17 @@ where
     F: Fn(Interval) -> Interval,
     F2N: Fn(Interval) -> Interval,
 {
-    let ia = interval!(a, a)?;
-    let ib = interval!(b, b)?;
+    let a = interval!(a, a)?;
+    let b = interval!(b, b)?;
     let i_n = interval!(n as f64, n as f64)?;
 
-    let h = (ib - ia) / i_n;
+    let h = (b - a) / i_n;
     let two_n = 2 * rule.order();
 
     let mut fact_2n = ONE;
 
     for k in 1..=two_n {
-        fact_2n = fact_2n * interval!(k as f64, k as f64)?;
+        fact_2n = fact_2n * interval!(k as f64, k as f64)?; // dois je faire k.next_down(), k.next_up() ?
     }
 
     let mut contributions = Vec::with_capacity(n as usize);
@@ -214,8 +214,8 @@ where
         let ii = interval!(i as f64, i as f64)?;
         let ii1 = interval!((i + 1) as f64, (i + 1) as f64)?;
 
-        let xi = if i == 0 { ia } else { ia + ii * h };
-        let xi1 = if i + 1 == n { ib } else { ia + ii1 * h };
+        let xi = if i == 0 { a } else { a + ii * h };
+        let xi1 = if i + 1 == n { b } else { a + ii1 * h };
 
         let (nodes, weights) = rule.transported(xi, xi1)?;
 
@@ -462,7 +462,9 @@ where
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+    use crate::hausdorff_nested;
     use std::f64::consts::PI;
 
     #[test]
@@ -778,11 +780,12 @@ mod tests {
             let exact = 1.0 / 6.0;
 
             println!(
-                "order = {:2} | result = [{:.17e}, {:.17e}] | encloses exact = {}",
+                "order = {:2} | result = [{:.17e}, {:.17e}] | encloses exact = {}, distance of the intervals  = {:.17e} ",
                 order,
                 result.inf(),
                 result.sup(),
-                result.contains(exact)
+                result.contains(exact),
+                hausdorff_nested(result, interval!(exact, exact).unwrap())
             );
 
             assert!(
