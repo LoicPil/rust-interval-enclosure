@@ -1,3 +1,6 @@
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
 use inari::{Interval, IntervalError, const_interval, interval};
 
 const ZERO: Interval = const_interval!(0.0, 0.0);
@@ -25,6 +28,34 @@ pub struct LocalCell {
     b: f64,
     enclosure: Interval,
     error_bound: f64,
+}
+
+/// Newtype wrapper giving `LocalCell` a total order based on `error_bound`,
+/// so cells can live in a `BinaryHeap` (a max-heap on `error_bound`).
+///
+struct HeapCell(LocalCell);
+
+impl PartialEq for HeapCell {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.error_bound == other.0.error_bound
+    }
+}
+
+impl Eq for HeapCell {}
+
+impl PartialOrd for HeapCell {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapCell {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0
+            .error_bound
+            .partial_cmp(&other.0.error_bound)
+            .unwrap_or(Ordering::Equal)
+    }
 }
 
 pub trait LocalQuadrature<F> {
@@ -153,42 +184,33 @@ where
     assert!(tolerance > 0.0, "tolerance must be positive");
     assert!(max_cells >= 1, "max_cells must be at least 1");
 
-    let mut cells = vec![method.integrate_cell(&f, a, b)?];
+    let first = method.integrate_cell(&f, a, b)?;
 
-    loop {
-        let total = pairwise_sum(&cells.iter().map(|cell| cell.enclosure).collect::<Vec<_>>());
+    let mut heap: BinaryHeap<HeapCell> = BinaryHeap::new();
+    heap.push(HeapCell(first));
 
-        if total.wid() <= tolerance {
-            return Ok(total);
-        }
+    let mut count = 1usize;
 
-        if cells.len() >= max_cells {
-            return Ok(total);
-        }
+    let mut total = first.enclosure;
 
-        let index = cells
-            .iter()
-            .enumerate()
-            .max_by(|(_, left), (_, right)| {
-                left.error_bound
-                    .partial_cmp(&right.error_bound)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(index, _)| index)
-            .expect("cells must not be empty");
-
-        let cell = cells.swap_remove(index);
+    while count < max_cells && total.wid() > tolerance {
+        let HeapCell(cell) = heap.pop().expect("heap must not be empty");
 
         let middle = cell.a + (cell.b - cell.a) / 2.0;
 
         let left = method.integrate_cell(&f, cell.a, middle)?;
         let right = method.integrate_cell(&f, middle, cell.b)?;
 
-        cells.push(left);
-        cells.push(right);
-    }
-}
+        heap.push(HeapCell(left));
+        heap.push(HeapCell(right));
+        count += 1;
 
+        let enclosures: Vec<Interval> = heap.iter().map(|hc| hc.0.enclosure).collect();
+        total = pairwise_sum(&enclosures);
+    }
+
+    Ok(total)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,7 +224,7 @@ mod tests {
             },
             0.0,
             1.0,
-            1e-12,
+            1e-16,
             10_000,
         )
         .unwrap();
@@ -227,7 +249,7 @@ mod tests {
             0.0,
             10.0,
             1e-10,
-            10_000,
+            1_000,
         )
         .unwrap();
 
@@ -250,7 +272,7 @@ mod tests {
             0.0,
             10.0,
             1e-10,
-            10_000,
+            1_000,
         )
         .unwrap();
 
@@ -273,7 +295,7 @@ mod tests {
             0.0,
             10.0,
             1e-10,
-            10_000,
+            1_000,
         )
         .unwrap();
 
