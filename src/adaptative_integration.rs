@@ -1,4 +1,4 @@
-use inari::{const_interval, interval, Interval, IntervalError};
+use inari::{Interval, IntervalError, const_interval, interval};
 
 const ZERO: Interval = const_interval!(0.0, 0.0);
 const TWO: Interval = const_interval!(2.0, 2.0);
@@ -6,8 +6,7 @@ const FOUR: Interval = const_interval!(4.0, 4.0);
 const SIX: Interval = const_interval!(6.0, 6.0);
 const TWELVE: Interval = const_interval!(12.0, 12.0);
 const TWENTY_FOUR: Interval = const_interval!(24.0, 24.0);
-const TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY: Interval =
-    const_interval!(2880.0, 2880.0);
+const TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY: Interval = const_interval!(2880.0, 2880.0);
 
 fn pairwise_sum(intervals: &[Interval]) -> Interval {
     match intervals.len() {
@@ -29,12 +28,7 @@ pub struct LocalCell {
 }
 
 pub trait LocalQuadrature<F> {
-    fn integrate_cell(
-        &self,
-        f: &F,
-        a: f64,
-        b: f64,
-    ) -> Result<LocalCell, IntervalError>;
+    fn integrate_cell(&self, f: &F, a: f64, b: f64) -> Result<LocalCell, IntervalError>;
 }
 
 pub struct Midpoint<FPP> {
@@ -46,12 +40,7 @@ where
     F: Fn(Interval) -> Interval,
     FPP: Fn(Interval) -> Interval,
 {
-    fn integrate_cell(
-        &self,
-        f: &F,
-        a: f64,
-        b: f64,
-    ) -> Result<LocalCell, IntervalError> {
+    fn integrate_cell(&self, f: &F, a: f64, b: f64) -> Result<LocalCell, IntervalError> {
         let ia = interval!(a, a)?;
         let ib = interval!(b, b)?;
 
@@ -68,10 +57,7 @@ where
 
         let enclosure = quadrature_value + error_term;
 
-        let error_bound = error_term
-            .inf()
-            .abs()
-            .max(error_term.sup().abs());
+        let error_bound = error_term.inf().abs().max(error_term.sup().abs());
 
         Ok(LocalCell {
             a,
@@ -91,12 +77,7 @@ where
     F: Fn(Interval) -> Interval,
     FPP: Fn(Interval) -> Interval,
 {
-    fn integrate_cell(
-        &self,
-        f: &F,
-        a: f64,
-        b: f64,
-    ) -> Result<LocalCell, IntervalError> {
+    fn integrate_cell(&self, f: &F, a: f64, b: f64) -> Result<LocalCell, IntervalError> {
         let ia = interval!(a, a)?;
         let ib = interval!(b, b)?;
 
@@ -110,10 +91,7 @@ where
 
         let enclosure = quadrature_value - error_term;
 
-        let error_bound = error_term
-            .inf()
-            .abs()
-            .max(error_term.sup().abs());
+        let error_bound = error_term.inf().abs().max(error_term.sup().abs());
 
         Ok(LocalCell {
             a,
@@ -133,12 +111,7 @@ where
     F: Fn(Interval) -> Interval,
     F4: Fn(Interval) -> Interval,
 {
-    fn integrate_cell(
-        &self,
-        f: &F,
-        a: f64,
-        b: f64,
-    ) -> Result<LocalCell, IntervalError> {
+    fn integrate_cell(&self, f: &F, a: f64, b: f64) -> Result<LocalCell, IntervalError> {
         let ia = interval!(a, a)?;
         let ib = interval!(b, b)?;
 
@@ -146,19 +119,14 @@ where
         let mid = (ia + ib) / TWO;
         let sub = interval!(a, b)?;
 
-        let quadrature_value =
-            (h / SIX) * (f(ia) + FOUR * f(mid) + f(ib));
+        let quadrature_value = (h / SIX) * (f(ia) + FOUR * f(mid) + f(ib));
 
         // ∫f ∈ S - h⁵/2880 f⁽⁴⁾([a,b])
-        let error_term =
-            (self.f_4)(sub) * h.powi(5) / TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY;
+        let error_term = (self.f_4)(sub) * h.powi(5) / TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY;
 
         let enclosure = quadrature_value - error_term;
 
-        let error_bound = error_term
-            .inf()
-            .abs()
-            .max(error_term.sup().abs());
+        let error_bound = error_term.inf().abs().max(error_term.sup().abs());
 
         Ok(LocalCell {
             a,
@@ -188,12 +156,7 @@ where
     let mut cells = vec![method.integrate_cell(&f, a, b)?];
 
     loop {
-        let total = pairwise_sum(
-            &cells
-                .iter()
-                .map(|cell| cell.enclosure)
-                .collect::<Vec<_>>(),
-        );
+        let total = pairwise_sum(&cells.iter().map(|cell| cell.enclosure).collect::<Vec<_>>());
 
         if total.wid() <= tolerance {
             return Ok(total);
@@ -323,4 +286,3 @@ mod tests {
         assert!(result.contains(exact));
     }
 }
-
