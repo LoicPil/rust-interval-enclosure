@@ -114,6 +114,7 @@ pub fn bunger_step(
     delta: f64,
     max_inflation_iterations: usize,
 ) -> Option<Vec<TaylorModel>> {
+    crate::taylor::clear_caches();
     let polynomial = picard_iteration(initial.clone(), f, t0, picard_iterations);
 
     verify_remainder(

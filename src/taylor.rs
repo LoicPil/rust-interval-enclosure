@@ -1,4 +1,5 @@
 use inari::{Interval, interval};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
@@ -66,8 +67,6 @@ impl Polynomial {
         result
     }
 
-    /// Splits self into (low, high): low keeps all terms of total degree ≤ order,
-    /// high keeps the rest. Used both for TM multiplication and integration.
     pub fn split(&self, order: usize) -> (Polynomial, Polynomial) {
         let mut low = Polynomial::new(self.dimension, order);
         let mut high = Polynomial::new(self.dimension, self.degree);
@@ -142,6 +141,36 @@ impl Mul for Polynomial {
         }
         result
     }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PolyKey(Vec<(Vec<usize>, u64)>);
+
+impl PolyKey {
+    fn from(p: &Polynomial) -> Self {
+        let mut v: Vec<(Vec<usize>, u64)> = p
+            .terms()
+            .into_iter()
+            .map(|(e, c)| (e.clone(), c.to_bits()))
+            .collect();
+        v.sort();
+        PolyKey(v)
+    }
+}
+
+thread_local! {
+    static MUL_CACHE: RefCell<HashMap<(PolyKey, PolyKey), (Polynomial, Interval, Interval, Interval)>> =
+        RefCell::new(HashMap::new());
+    static INTEGRATE_CACHE: RefCell<HashMap<PolyKey, (Polynomial, Interval)>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Drops all cached polynomial-only results. Call once per integration step
+/// (Bünger's record feature is only valid while p stays frozen; a new step
+/// means a new p, so stale entries must not survive across steps).
+pub fn clear_caches() {
+    MUL_CACHE.with(|c| c.borrow_mut().clear());
+    INTEGRATE_CACHE.with(|c| c.borrow_mut().clear());
 }
 
 #[derive(Clone, Debug)]
@@ -219,23 +248,29 @@ impl TaylorModel {
         self.polynomial.sample(point)
     }
 
-    /// K's integral term: antiderivative of self wrt the time variable (last
-    /// coordinate), from the (shifted) center 0 up to the variable t itself.
-    /// Corresponds to the general TM-integration formula, Bünger sec. 3.1.
     pub fn integrate_time(&self, _t0: f64) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
+        let key = PolyKey::from(&self.polynomial);
 
-        let mut antideriv = Polynomial::new(self.polynomial.dimension, self.order + 1);
-        for (exponents, coeff) in self.polynomial.terms() {
-            let mut new_exp = exponents.clone();
-            new_exp[time_var] += 1;
-            let k = new_exp[time_var] as f64;
-            let value = antideriv.get(&new_exp) + *coeff / k;
-            antideriv.set(&new_exp, value);
-        }
+        let (r, s_range) = INTEGRATE_CACHE.with(|cache| {
+            if let Some(cached) = cache.borrow().get(&key) {
+                return cached.clone();
+            }
+            let mut antideriv = Polynomial::new(self.polynomial.dimension, self.order + 1);
+            for (exponents, coeff) in self.polynomial.terms() {
+                let mut new_exp = exponents.clone();
+                new_exp[time_var] += 1;
+                let k = new_exp[time_var] as f64;
+                let value = antideriv.get(&new_exp) + *coeff / k;
+                antideriv.set(&new_exp, value);
+            }
+            let (r, s) = antideriv.split(self.order);
+            let s_range = s.evaluate(&self.domain);
+            let entry = (r, s_range);
+            cache.borrow_mut().insert(key, entry.clone());
+            entry
+        });
 
-        let (r, s) = antideriv.split(self.order);
-        let s_range = s.evaluate(&self.domain);
         let time_range = self.domain[time_var];
         let new_remainder = s_range + self.remainder * time_range;
 
@@ -323,12 +358,24 @@ impl Mul for TaylorModel {
         assert_eq!(self.order, other.order);
         let order = self.order;
 
-        let product = self.polynomial.clone() * other.polynomial.clone();
-        let (low, high) = product.split(order);
+        let key = (
+            PolyKey::from(&self.polynomial),
+            PolyKey::from(&other.polynomial),
+        );
 
-        let high_range = high.evaluate(&self.domain);
-        let p_range = self.polynomial.evaluate(&self.domain);
-        let q_range = other.polynomial.evaluate(&self.domain);
+        let (low, high_range, p_range, q_range) = MUL_CACHE.with(|cache| {
+            if let Some(cached) = cache.borrow().get(&key) {
+                return cached.clone();
+            }
+            let product = self.polynomial.clone() * other.polynomial.clone();
+            let (low, high) = product.split(order);
+            let high_range = high.evaluate(&self.domain);
+            let p_range = self.polynomial.evaluate(&self.domain);
+            let q_range = other.polynomial.evaluate(&self.domain);
+            let entry = (low, high_range, p_range, q_range);
+            cache.borrow_mut().insert(key, entry.clone());
+            entry
+        });
 
         let error = high_range
             + p_range * other.remainder
