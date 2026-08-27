@@ -1,6 +1,6 @@
 use inari::interval;
 
-use interval_enclosure::ode::{plot_solution, solve_ode};
+use interval_enclosure::ode::{plot_solution, solve_bunger_preconditioned, solve_ode};
 use interval_enclosure::taylor::TaylorModel;
 
 // ============================================================
@@ -10,7 +10,7 @@ use interval_enclosure::taylor::TaylorModel;
 const ORDER: usize = 10;
 
 const T0: f64 = 0.0;
-const TF: f64 = 0.15;
+const TF: f64 = 50.0;
 
 const H: f64 = 0.01;
 
@@ -177,7 +177,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initial condition
     // --------------------------------------------------------
 
-    let initial = initial_state();
+    let initial =
+        TaylorModel::parameterized_initial_set(&[-8.0, 8.0, 27.0], &[0.001, 0.001, 0.001], ORDER);
 
     // --------------------------------------------------------
     // Solve
@@ -191,8 +192,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. endpoint substitution
     // --------------------------------------------------------
 
-    let result = solve_ode(initial, lorenz, T0, H, N_STEPS)?;
-
+    let result = solve_bunger_preconditioned(
+        initial, lorenz, T0, H, N_STEPS, 0.01, 1e-12, 50,
+        1e-8, // blunt_tau — start conservative, tune if you see singular-matrix panics
+    )?;
     // --------------------------------------------------------
     // Final enclosure
     // --------------------------------------------------------
