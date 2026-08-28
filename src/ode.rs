@@ -4,12 +4,36 @@ use matplotlib::pyplot::subplots;
 
 pub type OdeFunction = fn(Vec<TaylorModel>) -> Vec<TaylorModel>;
 
+#[derive(Clone, Debug)]
+pub struct BungerOptions {
+    pub order: usize,
+    pub h: f64,
+    pub epsilon: f64,
+    pub delta: f64,
+    pub max_inflation_iterations: usize,
+    pub blunt_tau: Option<f64>,
+    pub preconditioning: bool,
+}
+
+impl Default for BungerOptions {
+    fn default() -> Self {
+        Self {
+            order: 10,
+            h: 0.01,
+            epsilon: 0.01,
+            delta: 1e-12,
+            max_inflation_iterations: 50,
+            blunt_tau: None,
+            preconditioning: false,
+        }
+    }
+}
+
 /// K(y) = y0 + ∫_{t0}^{t} f(y) dt, evaluated in Taylor model arithmetic.
 pub fn picard_step(
     initial: &[TaylorModel],
     current: &[TaylorModel],
     f: OdeFunction,
-    t0: f64,
 ) -> Vec<TaylorModel> {
     assert_eq!(initial.len(), current.len());
 
@@ -19,21 +43,17 @@ pub fn picard_step(
     derivatives
         .into_iter()
         .zip(initial.iter())
-        .map(|(fi, yi)| yi.clone() + fi.integrate_time(t0))
+        .map(|(fi, yi)| yi.clone() + fi.integrate_time())
         .collect()
 }
 
 /// p^(0) = q,  p^(i+1) = K(p^(i)); after `iterations` steps the polynomial
 /// part is the order-`iterations` Taylor polynomial of the flow.
-pub fn picard_iteration(
-    initial: Vec<TaylorModel>,
-    f: OdeFunction,
-    t0: f64,
-    iterations: usize,
-) -> Vec<TaylorModel> {
+pub fn picard_iteration(initial: Vec<TaylorModel>, f: OdeFunction) -> Vec<TaylorModel> {
+    let iterations = initial[0].order;
     let mut current = initial.clone();
     for _ in 0..iterations {
-        current = picard_step(&initial, &current, f, t0);
+        current = picard_step(&initial, &current, f);
     }
     current
 }
@@ -75,7 +95,6 @@ pub fn verify_remainder(
     polynomial: &[TaylorModel],
     initial: &[TaylorModel],
     f: OdeFunction,
-    t0: f64,
     epsilon: f64,
     delta: f64,
     max_iterations: usize,
@@ -90,7 +109,7 @@ pub fn verify_remainder(
             .map(|(p, &e)| with_remainder(p, e))
             .collect();
 
-        let image = picard_step(initial, &enclosure, f, t0);
+        let image = picard_step(initial, &enclosure, f);
 
         if vector_subset(&image, &enclosure) {
             return Some(enclosure);
@@ -108,23 +127,21 @@ pub fn verify_remainder(
 pub fn bunger_step(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
-    t0: f64,
-    picard_iterations: usize,
-    epsilon: f64,
-    delta: f64,
-    max_inflation_iterations: usize,
+    options: &BungerOptions,
 ) -> Option<Vec<TaylorModel>> {
     crate::taylor::clear_caches();
-    let polynomial = picard_iteration(initial.clone(), f, t0, picard_iterations);
-
+    let polynomial = picard_iteration(initial.clone(), f);
+    // eprintln!(
+    //     "poly[0] term count: {}",
+    //     polynomial[0].polynomial.terms().len()
+    // );
     verify_remainder(
         &polynomial,
         &initial,
         f,
-        t0,
-        epsilon,
-        delta,
-        max_inflation_iterations,
+        options.epsilon,
+        options.delta,
+        options.max_inflation_iterations,
     )
 }
 
@@ -142,12 +159,8 @@ pub fn solve_bunger(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
     t0: f64,
-    h: f64,
     n_steps: usize,
-    picard_iterations: usize,
-    epsilon: f64,
-    delta: f64,
-    max_inflation_iterations: usize,
+    options: &BungerOptions,
 ) -> Result<Vec<(f64, Vec<Interval>)>, String> {
     let mut current = initial;
     let mut result = Vec::with_capacity(n_steps + 1);
@@ -156,46 +169,339 @@ pub fn solve_bunger(
     let mut t = t0;
 
     for step in 0..n_steps {
-        let enclosure = bunger_step(
-            current,
-            f,
-            t,
-            picard_iterations,
-            epsilon,
-            delta,
-            max_inflation_iterations,
-        )
-        .ok_or_else(|| format!("verification failed at step {} (t = {})", step, t))?;
+        let enclosure = bunger_step(current, f, options)
+            .ok_or_else(|| format!("verification failed at step {} (t = {})", step, t))?;
 
-        t += h;
+        t += options.h;
         result.push((t, ranges(&enclosure)));
 
-        current = endpoint(&enclosure, h)
+        current = endpoint(&enclosure, options.h)
             .into_iter()
-            .map(|tm| tm.extend_with_time(h))
+            .map(|tm| tm.extend_with_time(options.h))
             .collect();
     }
 
     Ok(result)
 }
-/// Thin wrapper around solve_bunger with sensible defaults, and doing the
-/// initial dimension-lift (Bünger Step 1 -> Step 2): the caller builds a
-/// time-independent q+J in dimension n, this lifts it to n+1 with a fresh
-/// time domain [0, h] before handing it to the main solver.
+
+/// Thin wrapper around solve_bunger doing the initial dimension-lift
+/// (Bünger Step 1 -> Step 2): the caller builds a time-independent q+J
+/// in dimension n, this lifts it to n+1 with a fresh time domain [0, h]
+/// before handing it to the main solver.
 pub fn solve_ode(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
     t0: f64,
-    h: f64,
     n_steps: usize,
+    options: &BungerOptions,
 ) -> Result<Vec<(f64, Vec<Interval>)>, String> {
-    let order = initial[0].order;
     let lifted: Vec<TaylorModel> = initial
         .into_iter()
-        .map(|tm| tm.extend_with_time(h))
+        .map(|tm| tm.extend_with_time(options.h))
         .collect();
 
-    solve_bunger(lifted, f, t0, h, n_steps, order, 0.01, 1e-12, 50)
+    solve_bunger(lifted, f, t0, n_steps, options)
+}
+
+pub mod linalg {
+    pub fn invert(a: &[Vec<f64>], floor: f64) -> Vec<Vec<f64>> {
+        let n = a.len();
+        let mut m: Vec<Vec<f64>> = a.to_vec();
+        let mut inv = vec![vec![0.0; n]; n];
+        for i in 0..n {
+            inv[i][i] = 1.0;
+        }
+
+        for col in 0..n {
+            let pivot = (col..n)
+                .max_by(|&i, &j| m[i][col].abs().partial_cmp(&m[j][col].abs()).unwrap())
+                .unwrap();
+            m.swap(col, pivot);
+            inv.swap(col, pivot);
+
+            let d = if m[col][col].abs() < floor {
+                floor.copysign(if m[col][col] == 0.0 { 1.0 } else { m[col][col] })
+            } else {
+                m[col][col]
+            };
+
+            for k in 0..n {
+                m[col][k] /= d;
+                inv[col][k] /= d;
+            }
+            for row in 0..n {
+                if row == col {
+                    continue;
+                }
+                let factor = m[row][col];
+                for k in 0..n {
+                    m[row][k] -= factor * m[col][k];
+                    inv[row][k] -= factor * inv[col][k];
+                }
+            }
+        }
+        inv
+    }
+
+    /// Smallest pivot seen during elimination — cheap proxy for near-singularity.
+    pub fn smallest_pivot_magnitude(a: &[Vec<f64>]) -> f64 {
+        let n = a.len();
+        let mut m: Vec<Vec<f64>> = a.to_vec();
+        let mut min_pivot = f64::INFINITY;
+        for col in 0..n {
+            let pivot = (col..n)
+                .max_by(|&i, &j| m[i][col].abs().partial_cmp(&m[j][col].abs()).unwrap())
+                .unwrap();
+            m.swap(col, pivot);
+            let d = m[col][col];
+            min_pivot = min_pivot.min(d.abs());
+            if d.abs() < 1e-300 {
+                break;
+            }
+            for row in (col + 1)..n {
+                let factor = m[row][col] / d;
+                for k in col..n {
+                    m[row][k] -= factor * m[col][k];
+                }
+            }
+        }
+        min_pivot
+    }
+}
+
+/// Splits space-only TMs p(x) into (A, b(x), c): linear coefficients,
+/// nonlinear remainder polynomial, and constant term.
+fn linear_decompose(p: &[TaylorModel]) -> (Vec<Vec<f64>>, Vec<TaylorModel>, Vec<f64>) {
+    let n = p.len();
+    let dim = p[0].polynomial.dimension;
+    let order = p[0].order;
+    let domain = p[0].domain.clone();
+
+    let mut a = vec![vec![0.0; n]; n];
+    let mut c = vec![0.0; n];
+    let mut b = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let mut b_poly = crate::taylor::Polynomial::new(dim, order);
+        for (exponents, coeff) in p[i].polynomial.terms() {
+            let deg: usize = exponents.iter().sum();
+            if deg == 0 {
+                c[i] = *coeff;
+            } else if deg == 1 {
+                let j = exponents.iter().position(|&e| e == 1).unwrap();
+                a[i][j] = *coeff;
+            } else {
+                b_poly.set(exponents, *coeff);
+            }
+        }
+        b.push(TaylorModel {
+            polynomial: b_poly,
+            remainder: interval!(0.0, 0.0).unwrap(),
+            domain: domain.clone(),
+            order,
+        });
+    }
+    (a, b, c)
+}
+
+pub struct Preconditioned {
+    pub q_l: Vec<TaylorModel>,
+    pub q_r: Vec<TaylorModel>,
+}
+
+/// Parallelepiped preconditioning (Q:=A, R:=I) with blunting guarding the inverse.
+pub fn precondition(
+    p_star_l: &[TaylorModel],
+    q_r: &[TaylorModel],
+    blunt_tau: f64,
+) -> Preconditioned {
+    let n = p_star_l.len();
+    let dim = p_star_l[0].polynomial.dimension;
+    let order = p_star_l[0].order;
+    let domain = p_star_l[0].domain.clone();
+
+    let (a, b, c) = linear_decompose(p_star_l);
+
+    let min_pivot = linalg::smallest_pivot_magnitude(&a);
+    let a_used = if min_pivot < blunt_tau {
+        let mut a2 = a.clone();
+        for i in 0..n {
+            a2[i][i] += blunt_tau;
+        }
+        a2
+    } else {
+        a
+    };
+    let a_inv = linalg::invert(&a_used, blunt_tau);
+
+    let i_l_star: Vec<Interval> = p_star_l.iter().map(|tm| tm.remainder).collect();
+    let mut composed: Vec<TaylorModel> = b.iter().map(|bi| bi.polynomial.compose_tm(q_r)).collect();
+    for (ci, &il) in composed.iter_mut().zip(i_l_star.iter()) {
+        ci.remainder = ci.remainder + il;
+    }
+
+    let u_plus_f: Vec<TaylorModel> = (0..n)
+        .map(|i| {
+            let mut acc = TaylorModel::constant(0.0, dim, order, domain.clone());
+            for j in 0..n {
+                if a_inv[i][j] != 0.0 {
+                    let mut poly = composed[j].polynomial.clone();
+                    for (exponents, coeff) in composed[j].polynomial.terms() {
+                        poly.set(exponents, *coeff * a_inv[i][j]);
+                    }
+                    let scaled = TaylorModel {
+                        polynomial: poly,
+                        remainder: composed[j].remainder * scalar(a_inv[i][j]),
+                        domain: domain.clone(),
+                        order,
+                    };
+                    acc = acc + scaled;
+                }
+            }
+            acc
+        })
+        .collect();
+
+    let s: Vec<f64> = u_plus_f
+        .iter()
+        .map(|tm| {
+            let r = tm.range();
+            let m = r.inf().abs().max(r.sup().abs());
+            if m > 0.0 { 1.0 / m } else { 1.0 }
+        })
+        .collect();
+
+    let q_r_new: Vec<TaylorModel> = u_plus_f
+        .iter()
+        .zip(s.iter())
+        .map(|(tm, &si)| {
+            let mut poly = tm.polynomial.clone();
+            for (exponents, coeff) in tm.polynomial.terms() {
+                poly.set(exponents, *coeff * si);
+            }
+            TaylorModel {
+                polynomial: poly,
+                remainder: tm.remainder * scalar(si),
+                domain: domain.clone(),
+                order,
+            }
+        })
+        .collect();
+
+    let q_l_new: Vec<TaylorModel> = (0..n)
+        .map(|i| {
+            let mut poly = crate::taylor::Polynomial::constant(dim, order, c[i]);
+            for j in 0..n {
+                let coeff = a_used[i][j] / s[j];
+                if coeff != 0.0 {
+                    poly = poly + crate::taylor::Polynomial::variable(dim, order, j, coeff);
+                }
+            }
+            TaylorModel {
+                polynomial: poly,
+                remainder: interval!(0.0, 0.0).unwrap(),
+                domain: domain.clone(),
+                order,
+            }
+        })
+        .collect();
+
+    Preconditioned {
+        q_l: q_l_new,
+        q_r: q_r_new,
+    }
+}
+
+/// Preconditioned solver: state is (q_ℓ, q_r) instead of a single q+J.
+pub fn solve_bunger_preconditioned(
+    initial: Vec<TaylorModel>,
+    f: OdeFunction,
+    t0: f64,
+    n_steps: usize,
+    options: &BungerOptions,
+) -> Result<Vec<(f64, Vec<Interval>)>, String> {
+    let blunt_tau = options.blunt_tau.unwrap_or(1e-8);
+    let n = initial.len();
+    let dim = initial[0].polynomial.dimension;
+    let order = initial[0].order;
+    let domain = initial[0].domain.clone();
+
+    let mut q_l = initial;
+    let mut q_r: Vec<TaylorModel> = (0..n)
+        .map(|i| TaylorModel::variable(i, 1.0, dim, order, domain.clone()))
+        .collect();
+
+    let mut result = Vec::with_capacity(n_steps + 1);
+    result.push((t0, ranges(&crate::taylor::compose(&q_l, &q_r))));
+
+    let mut t = t0;
+    for step in 0..n_steps {
+        let lifted: Vec<TaylorModel> = q_l
+            .into_iter()
+            .map(|tm| tm.extend_with_time(options.h))
+            .collect();
+
+        let enclosure = bunger_step(lifted, f, options)
+            .ok_or_else(|| format!("verification failed at step {} (t = {})", step, t))?;
+
+        t += options.h;
+        // in solve_bunger_preconditioned's loop, right after `t += options.h;`
+        if step % 100 == 0 {
+            eprintln!("step {} / {}, t = {:.3}", step, n_steps, t);
+        }
+        let p_star_l = endpoint(&enclosure, options.h);
+
+        let before = crate::taylor::compose(&p_star_l, &q_r);
+
+        let Preconditioned {
+            q_l: new_q_l,
+            q_r: new_q_r,
+        } = precondition(&p_star_l, &q_r, blunt_tau);
+
+        let after = crate::taylor::compose(&new_q_l, &new_q_r);
+
+        // DEBUG
+        for i in 0..n {
+            println!(
+                "component {}:\n  before = {}\n  after  = {}",
+                i,
+                before[i].range(),
+                after[i].range()
+            );
+        }
+
+        result.push((t, ranges(&after)));
+
+        q_l = new_q_l;
+        q_r = new_q_r;
+    }
+
+    Ok(result)
+}
+
+/// Single entry point: dispatches to the naive or preconditioned solver
+/// based on `options.preconditioning`, taking [t0, tf] directly instead of
+/// a precomputed step count.
+pub fn solve(
+    initial: Vec<TaylorModel>,
+    f: OdeFunction,
+    t0: f64,
+    tf: f64,
+    options: &BungerOptions,
+) -> Result<Vec<(f64, Vec<Interval>)>, String> {
+    assert_eq!(
+        initial[0].order, options.order,
+        "TaylorModel order ({}) must match BungerOptions.order ({})",
+        initial[0].order, options.order
+    );
+
+    let n_steps = ((tf - t0) / options.h).round() as usize;
+
+    if options.preconditioning {
+        solve_bunger_preconditioned(initial, f, t0, n_steps, options)
+    } else {
+        solve_ode(initial, f, t0, n_steps, options)
+    }
 }
 
 pub fn plot_component(
@@ -253,4 +559,8 @@ pub fn plot_solution(
     ax.legend(std::iter::empty());
     fig.save().to_file(filename)?;
     Ok(())
+}
+
+fn scalar(x: f64) -> Interval {
+    interval!(x, x).unwrap()
 }
