@@ -26,13 +26,18 @@ impl Polynomial {
 
     pub fn set(&mut self, exponents: &[usize], value: f64) {
         assert_eq!(exponents.len(), self.dimension);
-        if value.abs() < 1e-14 {
+        assert!(
+            value.is_finite(),
+            "non-finite coefficient {} at {:?}",
+            value,
+            exponents
+        );
+        if value <= 1e-50 {
             self.coeffs.remove(exponents);
         } else {
             self.coeffs.insert(exponents.to_vec(), value);
         }
     }
-
     pub fn constant(dimension: usize, degree: usize, value: f64) -> Self {
         let mut p = Self::new(dimension, degree);
         p.set(&vec![0; dimension], value);
@@ -248,7 +253,7 @@ impl TaylorModel {
         self.polynomial.sample(point)
     }
 
-    pub fn integrate_time(&self, _t0: f64) -> TaylorModel {
+    pub fn integrate_time(&self) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
         let key = PolyKey::from(&self.polynomial);
 
@@ -425,5 +430,69 @@ impl fmt::Display for TaylorModel {
         }
 
         write!(f, " + E, E = {}", self.remainder)
+    }
+}
+
+impl Polynomial {
+    /// Substitutes a Taylor-model vector into self's variables (TM arithmetic).
+    pub fn compose_tm(&self, args: &[TaylorModel]) -> TaylorModel {
+        assert_eq!(args.len(), self.dimension);
+        let dim = args[0].polynomial.dimension;
+        let order = args[0].order;
+        let domain = args[0].domain.clone();
+
+        let mut result = TaylorModel::constant(0.0, dim, order, domain.clone());
+        for (exponents, coeff) in self.terms() {
+            let mut term = TaylorModel::constant(*coeff, dim, order, domain.clone());
+            for (j, &e) in exponents.iter().enumerate() {
+                if e > 0 {
+                    term = term * args[j].powi(e);
+                }
+            }
+            result = result + term;
+        }
+        result
+    }
+}
+
+/// (left) ∘ (right) := left.polynomial(right) + left.remainder, per component.
+pub fn compose(left: &[TaylorModel], right: &[TaylorModel]) -> Vec<TaylorModel> {
+    left.iter()
+        .map(|li| {
+            let composed = li.polynomial.compose_tm(right);
+            TaylorModel {
+                remainder: composed.remainder + li.remainder,
+                ..composed
+            }
+        })
+        .collect()
+}
+
+impl TaylorModel {
+    pub fn standard_domain(dim: usize) -> Vec<Interval> {
+        (0..dim).map(|_| interval!(-1.0, 1.0).unwrap()).collect()
+    }
+
+    pub fn parameterized_initial_set(
+        centers: &[f64],
+        radii: &[f64],
+        order: usize,
+    ) -> Vec<TaylorModel> {
+        assert_eq!(centers.len(), radii.len());
+
+        let n = centers.len();
+        let domain = TaylorModel::standard_domain(n);
+
+        let mut result = Vec::with_capacity(n);
+
+        for i in 0..n {
+            let constant = TaylorModel::constant(centers[i], n, order, domain.clone());
+
+            let variable = TaylorModel::variable(i, radii[i], n, order, domain.clone());
+
+            result.push(constant + variable);
+        }
+
+        result
     }
 }
