@@ -1,6 +1,7 @@
-use inari::interval;
+use inari::Interval;
+use matplotlib::pyplot::subplots;
 
-use interval_enclosure::ode::{plot_solution, solve_bunger_preconditioned, solve_ode};
+use interval_enclosure::ode::{BungerOptions, solve};
 use interval_enclosure::taylor::TaylorModel;
 
 // ============================================================
@@ -10,11 +11,9 @@ use interval_enclosure::taylor::TaylorModel;
 const ORDER: usize = 10;
 
 const T0: f64 = 0.0;
-const TF: f64 = 50.0;
+const TF: f64 = 100.0;
 
 const H: f64 = 0.01;
-
-const N_STEPS: usize = ((TF - T0) / H) as usize;
 
 // ============================================================
 // Lorenz parameters
@@ -26,6 +25,12 @@ const BETA: f64 = 8.0 / 3.0;
 
 // ============================================================
 // Initial intervals
+// ============================================================
+//
+// x(0) ∈ [-8.001, -7.998]
+// y(0) ∈ [ 7.998,  8.001]
+// z(0) ∈ [26.998, 27.001]
+//
 // ============================================================
 
 const Y1_LO: f64 = -8.001;
@@ -39,12 +44,14 @@ const Y3_HI: f64 = 27.001;
 
 // ============================================================
 // Lorenz RHS
+// ============================================================
 //
-// y1' = sigma (y2 - y1)
+//     y1' = sigma (y2 - y1)
 //
-// y2' = (rho - y3)y1 - y2
+//     y2' = (rho - y3)y1 - y2
 //
-// y3' = y1 y2 - beta y3
+//     y3' = y1 y2 - beta y3
+//
 // ============================================================
 
 fn lorenz(y: Vec<TaylorModel>) -> Vec<TaylorModel> {
@@ -58,7 +65,9 @@ fn lorenz(y: Vec<TaylorModel>) -> Vec<TaylorModel> {
     let order = y1.order;
     let domain = y1.domain.clone();
 
-    // Constants as Taylor models.
+    // --------------------------------------------------------
+    // Constants
+    // --------------------------------------------------------
 
     let sigma = TaylorModel::constant(SIGMA, dimension, order, domain.clone());
 
@@ -80,65 +89,166 @@ fn lorenz(y: Vec<TaylorModel>) -> Vec<TaylorModel> {
 }
 
 // ============================================================
-// Initial Taylor model
+// Initial state
+// ============================================================
 //
-// x1,x2,x3 ∈ [-1,1]
+// The initial parameters are:
 //
-// y1 = midpoint(y1) + radius(y1) x1
-// y2 = midpoint(y2) + radius(y2) x2
-// y3 = midpoint(y3) + radius(y3) x3
+//     x1, x2, x3 ∈ [-1,1]
 //
-// The time variable is added by solve_ode().
+// with:
+//
+//     y1 = midpoint(y1) + radius(y1) x1
+//     y2 = midpoint(y2) + radius(y2) x2
+//     y3 = midpoint(y3) + radius(y3) x3
+//
 // ============================================================
 
 fn initial_state() -> Vec<TaylorModel> {
-    let domain = vec![
-        interval!(-1.0, 1.0).unwrap(),
-        interval!(-1.0, 1.0).unwrap(),
-        interval!(-1.0, 1.0).unwrap(),
-    ];
+    TaylorModel::parameterized_initial_set(
+        &[
+            0.5 * (Y1_LO + Y1_HI),
+            0.5 * (Y2_LO + Y2_HI),
+            0.5 * (Y3_LO + Y3_HI),
+        ],
+        &[
+            0.5 * (Y1_HI - Y1_LO),
+            0.5 * (Y2_HI - Y2_LO),
+            0.5 * (Y3_HI - Y3_LO),
+        ],
+        ORDER,
+    )
+}
 
-    // --------------------------------------------------------
-    // y1
-    // --------------------------------------------------------
+// ============================================================
+// Helper: interval midpoint
+// ============================================================
 
-    let y1_mid = 0.5 * (Y1_LO + Y1_HI);
-    let y1_rad = 0.5 * (Y1_HI - Y1_LO);
+fn interval_midpoint(x: Interval) -> f64 {
+    0.5 * (x.inf() + x.sup())
+}
 
-    let y1 = TaylorModel::constant(y1_mid, 3, ORDER, domain.clone())
-        + TaylorModel::variable(0, y1_rad, 3, ORDER, domain.clone());
+// ============================================================
+// Lorenz attractor: x-z projection
+// ============================================================
 
-    // --------------------------------------------------------
-    // y2
-    // --------------------------------------------------------
+fn plot_lorenz_attractor(
+    result: &[(f64, Vec<Interval>)],
+    filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(!result.is_empty());
 
-    let y2_mid = 0.5 * (Y2_LO + Y2_HI);
-    let y2_rad = 0.5 * (Y2_HI - Y2_LO);
+    let xs: Vec<f64> = result
+        .iter()
+        .map(|(_, values)| {
+            assert!(values.len() >= 3);
+            interval_midpoint(values[0])
+        })
+        .collect();
 
-    let y2 = TaylorModel::constant(y2_mid, 3, ORDER, domain.clone())
-        + TaylorModel::variable(1, y2_rad, 3, ORDER, domain.clone());
+    let zs: Vec<f64> = result
+        .iter()
+        .map(|(_, values)| {
+            assert!(values.len() >= 3);
+            interval_midpoint(values[2])
+        })
+        .collect();
 
-    // --------------------------------------------------------
-    // y3
-    // --------------------------------------------------------
+    let (fig, [[mut ax]]) = subplots()?;
 
-    let y3_mid = 0.5 * (Y3_LO + Y3_HI);
-    let y3_rad = 0.5 * (Y3_HI - Y3_LO);
+    ax.xy(&xs, &zs).fmt("-").label("trajectory").plot();
 
-    let y3 = TaylorModel::constant(y3_mid, 3, ORDER, domain)
-        + TaylorModel::variable(
-            2,
-            y3_rad,
-            3,
-            ORDER,
-            vec![
-                interval!(-1.0, 1.0).unwrap(),
-                interval!(-1.0, 1.0).unwrap(),
-                interval!(-1.0, 1.0).unwrap(),
-            ],
-        );
+    ax.set_title("Lorenz Attractor");
+    ax.set_xlabel("x");
+    ax.set_ylabel("z");
+    ax.grid();
+    ax.legend(std::iter::empty());
 
-    vec![y1, y2, y3]
+    fig.save().to_file(filename)?;
+
+    Ok(())
+}
+
+// ============================================================
+// Lorenz attractor: x-y projection
+// ============================================================
+
+fn plot_lorenz_xy(
+    result: &[(f64, Vec<Interval>)],
+    filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(!result.is_empty());
+
+    let xs: Vec<f64> = result
+        .iter()
+        .map(|(_, values)| {
+            assert!(values.len() >= 3);
+            interval_midpoint(values[0])
+        })
+        .collect();
+
+    let ys: Vec<f64> = result
+        .iter()
+        .map(|(_, values)| {
+            assert!(values.len() >= 3);
+            interval_midpoint(values[1])
+        })
+        .collect();
+
+    let (fig, [[mut ax]]) = subplots()?;
+
+    ax.xy(&xs, &ys).fmt("-").label("trajectory").plot();
+
+    ax.set_title("Lorenz Attractor - x/y projection");
+    ax.set_xlabel("x");
+    ax.set_ylabel("y");
+    ax.grid();
+    ax.legend(std::iter::empty());
+
+    fig.save().to_file(filename)?;
+
+    Ok(())
+}
+
+// ============================================================
+// Lorenz attractor: y-z projection
+// ============================================================
+
+fn plot_lorenz_yz(
+    result: &[(f64, Vec<Interval>)],
+    filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert!(!result.is_empty());
+
+    let ys: Vec<f64> = result
+        .iter()
+        .map(|(_, values)| {
+            assert!(values.len() >= 3);
+            interval_midpoint(values[1])
+        })
+        .collect();
+
+    let zs: Vec<f64> = result
+        .iter()
+        .map(|(_, values)| {
+            assert!(values.len() >= 3);
+            interval_midpoint(values[2])
+        })
+        .collect();
+
+    let (fig, [[mut ax]]) = subplots()?;
+
+    ax.xy(&ys, &zs).fmt("-").label("trajectory").plot();
+
+    ax.set_title("Lorenz Attractor - y/z projection");
+    ax.set_xlabel("y");
+    ax.set_ylabel("z");
+    ax.grid();
+    ax.legend(std::iter::empty());
+
+    fig.save().to_file(filename)?;
+
+    Ok(())
 }
 
 // ============================================================
@@ -147,6 +257,7 @@ fn initial_state() -> Vec<TaylorModel> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
+
     println!("==========================================");
     println!("Bünger Taylor Model - Lorenz System");
     println!("==========================================");
@@ -154,7 +265,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Taylor order : {}", ORDER);
     println!("Time interval: [{}, {}]", T0, TF);
     println!("Step size    : {}", H);
-    println!("Steps        : {}", N_STEPS);
+    println!("Steps        : {}", ((TF - T0) / H).round() as usize);
 
     println!();
 
@@ -165,42 +276,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     println!("Bünger Taylor-model arithmetic");
-    println!("Record Feature: DISABLED");
+    println!("Record Feature: ENABLED");
     println!("Lorenz RHS: TaylorModel");
-    println!("Polynomial multiplication: standard");
-    println!("No QR preconditioning");
-    println!("No shrink wrapping");
+    println!("Polynomial multiplication: recorded");
+    println!("QR preconditioning: ENABLED");
+    println!("Shrink wrapping: DISABLED");
 
     println!();
 
-    // --------------------------------------------------------
+    // ========================================================
     // Initial condition
-    // --------------------------------------------------------
+    // ========================================================
 
-    let initial =
-        TaylorModel::parameterized_initial_set(&[-8.0, 8.0, 27.0], &[0.001, 0.001, 0.001], ORDER);
+    let initial = initial_state();
 
-    // --------------------------------------------------------
-    // Solve
-    //
-    // solve_ode() performs:
-    //
-    // 1. time lifting
-    // 2. Picard iteration
-    // 3. remainder verification
-    // 4. epsilon inflation
-    // 5. endpoint substitution
-    // --------------------------------------------------------
+    // ========================================================
+    // Bünger options
+    // ========================================================
 
-    let result = solve_bunger_preconditioned(
-        initial, lorenz, T0, H, N_STEPS, 0.01, 1e-12, 50,
-        1e-8, // blunt_tau — start conservative, tune if you see singular-matrix panics
-    )?;
-    // --------------------------------------------------------
+    let options = BungerOptions {
+        order: ORDER,
+        h: H,
+        epsilon: 0.01,
+        delta: 1e-12,
+        max_inflation_iterations: 50,
+
+        // Kept available for future blunting experiments.
+        // The current QR preconditioner does not use it.
+        blunt_tau: Some(1e-8),
+
+        // This is the important part:
+        // use Bünger's QR preconditioning.
+        preconditioning: true,
+    };
+
+    // ========================================================
+    // Verified integration
+    // ========================================================
+
+    let result = solve(initial, lorenz, T0, TF, &options)
+        .map_err(|e| format!("Bünger solver failed: {}", e))?;
+
+    // ========================================================
     // Final enclosure
-    // --------------------------------------------------------
+    // ========================================================
 
     println!();
+
     println!("==========================================");
     println!("Final enclosure at t = {}", TF);
 
@@ -214,11 +336,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("==========================================");
 
-    // --------------------------------------------------------
-    // Plot
-    // --------------------------------------------------------
+    // ========================================================
+    // Plot 1: components versus time
+    // ========================================================
 
-    plot_solution(
+    interval_enclosure::ode::plot_solution(
         &result,
         "Bünger Taylor Model - Lorenz system",
         "lorenz_taylor_model.pdf",
@@ -226,6 +348,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
     println!("PDF written to: lorenz_taylor_model.pdf");
+
+    // ========================================================
+    // Plot 2: Lorenz attractor x-z
+    // ========================================================
+
+    plot_lorenz_attractor(&result, "lorenz_attractor.pdf")?;
+
+    println!("PDF written to: lorenz_attractor.pdf");
+
+    // ========================================================
+    // Plot 3: x-y projection
+    // ========================================================
+
+    plot_lorenz_xy(&result, "lorenz_attractor_xy.pdf")?;
+
+    println!("PDF written to: lorenz_attractor_xy.pdf");
+
+    // ========================================================
+    // Plot 4: y-z projection
+    // ========================================================
+
+    plot_lorenz_yz(&result, "lorenz_attractor_yz.pdf")?;
+
+    println!("PDF written to: lorenz_attractor_yz.pdf");
+
+    println!();
 
     Ok(())
 }
