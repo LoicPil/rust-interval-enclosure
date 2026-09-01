@@ -349,15 +349,16 @@ fn linear_decompose(p: &[TaylorModel]) -> (Vec<Vec<f64>>, Vec<TaylorModel>, Vec<
 
     for i in 0..n {
         let mut b_poly = crate::taylor::Polynomial::new(dim, order);
+        // MODIFICATION ICI : termes retournés par valeur
         for (exponents, coeff) in p[i].polynomial.terms() {
             let deg: usize = exponents.iter().sum();
             if deg == 0 {
-                c[i] = *coeff;
+                c[i] = coeff; // plus de *
             } else if deg == 1 {
                 let j = exponents.iter().position(|&e| e == 1).unwrap();
-                a[i][j] = *coeff;
+                a[i][j] = coeff; // plus de *
             } else {
-                b_poly.set(exponents, *coeff);
+                b_poly.set(&exponents, coeff); // &exponents et plus de *
             }
         }
         b.push(TaylorModel {
@@ -421,8 +422,9 @@ pub fn precondition(
             for j in 0..n {
                 if r_mat[i][j] != 0.0 {
                     let mut poly = q_r[j].polynomial.clone();
+                    // CORRECTION ICI: ajout de & et retrait de *
                     for (exponents, coeff) in q_r[j].polynomial.terms() {
-                        poly.set(exponents, *coeff * r_mat[i][j]);
+                        poly.set(&exponents, coeff * r_mat[i][j]);
                     }
                     let scaled = TaylorModel {
                         polynomial: poly,
@@ -438,8 +440,9 @@ pub fn precondition(
             for j in 0..n {
                 if q_t[i][j] != 0.0 {
                     let mut poly = composed[j].polynomial.clone();
+                    // CORRECTION ICI: ajout de & et retrait de *
                     for (exponents, coeff) in composed[j].polynomial.terms() {
-                        poly.set(exponents, *coeff * q_t[i][j]);
+                        poly.set(&exponents, coeff * q_t[i][j]);
                     }
                     let scaled = TaylorModel {
                         polynomial: poly,
@@ -468,8 +471,9 @@ pub fn precondition(
         .zip(s.iter())
         .map(|(tm, &si)| {
             let mut poly = tm.polynomial.clone();
+            // CORRECTION ICI: ajout de & et retrait de *
             for (exponents, coeff) in tm.polynomial.terms() {
-                poly.set(exponents, *coeff * si);
+                poly.set(&exponents, coeff * si);
             }
             TaylorModel {
                 polynomial: poly,
@@ -543,7 +547,8 @@ pub fn solve_bunger_preconditioned(
         }
         let p_star_l = endpoint(&enclosure, options.h);
 
-        let before = crate::taylor::compose(&p_star_l, &q_r);
+        // CORRECTION: Préfixé par _ pour supprimer le warning
+        let _before = crate::taylor::compose(&p_star_l, &q_r);
 
         let Preconditioned {
             q_l: new_q_l,
@@ -551,16 +556,6 @@ pub fn solve_bunger_preconditioned(
         } = precondition(&p_star_l, &q_r, blunt_tau);
 
         let after = crate::taylor::compose(&new_q_l, &new_q_r);
-
-        // DEBUG
-        // for i in 0..n {
-        //     println!(
-        //         "component {}:\n  before = {}\n  after  = {}",
-        //         i,
-        //         before[i].range(),
-        //         after[i].range()
-        //     );
-        // }
 
         result.push((t, ranges(&after)));
 

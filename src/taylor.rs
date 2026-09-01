@@ -14,7 +14,9 @@ pub const SPARSITY_THRESHOLD: f64 = 1e-16;
 
 #[derive(Clone, Debug)]
 pub struct Polynomial {
-    coeffs: HashMap<Vec<usize>, f64>,
+    /// Coeffs stockés dans une HashMap avec une clé linéaire (index encodé en base mixte).
+    /// Beaucoup plus rapide que Vec<usize> pour le hachage, l'insertion et la recherche.
+    coeffs: HashMap<usize, f64>,
     degree: usize,
     pub dimension: usize,
 }
@@ -28,8 +30,31 @@ impl Polynomial {
         }
     }
 
+    /// Encode un vecteur d'exposants en un index unique (base = degree + 1)
+    fn index(&self, exponents: &[usize]) -> usize {
+        let base = self.degree + 1;
+        let mut idx = 0;
+        let mut pow = 1;
+        for i in 0..self.dimension {
+            idx += exponents[i] * pow;
+            pow *= base;
+        }
+        idx
+    }
+
+    /// Décode un index linéaire vers un vecteur d'exposants
+    fn decode(&self, mut idx: usize) -> Vec<usize> {
+        let base = self.degree + 1;
+        let mut exponents = vec![0; self.dimension];
+        for i in 0..self.dimension {
+            exponents[i] = idx % base;
+            idx /= base;
+        }
+        exponents
+    }
+
     pub fn get(&self, exponents: &[usize]) -> f64 {
-        *self.coeffs.get(exponents).unwrap_or(&0.0)
+        *self.coeffs.get(&self.index(exponents)).unwrap_or(&0.0)
     }
 
     /// Sets a coefficient. Only drops it on an EXACT zero — this is a plain
@@ -45,10 +70,11 @@ impl Polynomial {
             value,
             exponents
         );
+        let idx = self.index(exponents);
         if value == 0.0 {
-            self.coeffs.remove(exponents);
+            self.coeffs.remove(&idx);
         } else {
-            self.coeffs.insert(exponents.to_vec(), value);
+            self.coeffs.insert(idx, value);
         }
     }
 
@@ -74,7 +100,8 @@ impl Polynomial {
     pub fn evaluate(&self, domain: &[Interval]) -> Interval {
         assert_eq!(domain.len(), self.dimension);
         let mut result = interval!(0.0, 0.0).unwrap();
-        for (exponents, coefficient) in &self.coeffs {
+        for (&idx, coefficient) in &self.coeffs {
+            let exponents = self.decode(idx);
             let mut term = interval!(*coefficient, *coefficient).unwrap();
             for (i, exponent) in exponents.iter().enumerate() {
                 if *exponent > 0 {
@@ -89,11 +116,12 @@ impl Polynomial {
     pub fn split(&self, order: usize) -> (Polynomial, Polynomial) {
         let mut low = Polynomial::new(self.dimension, order);
         let mut high = Polynomial::new(self.dimension, self.degree);
-        for (exponents, coefficient) in &self.coeffs {
-            if Self::total_degree(exponents) <= order {
-                low.set(exponents, *coefficient);
+        for (&idx, coefficient) in &self.coeffs {
+            let exponents = self.decode(idx);
+            if Self::total_degree(&exponents) <= order {
+                low.set(&exponents, *coefficient);
             } else {
-                high.set(exponents, *coefficient);
+                high.set(&exponents, *coefficient);
             }
         }
         (low, high)
@@ -102,7 +130,8 @@ impl Polynomial {
     pub fn sample(&self, point: &[f64]) -> f64 {
         assert_eq!(point.len(), self.dimension);
         let mut result = 0.0;
-        for (exponents, coefficient) in &self.coeffs {
+        for (&idx, coefficient) in &self.coeffs {
+            let exponents = self.decode(idx);
             let mut term = *coefficient;
             for (x, exponent) in point.iter().zip(exponents.iter()) {
                 term *= x.powi(*exponent as i32);
@@ -112,8 +141,14 @@ impl Polynomial {
         result
     }
 
-    pub fn terms(&self) -> Vec<(&Vec<usize>, &f64)> {
-        let mut terms: Vec<_> = self.coeffs.iter().collect();
+    /// Retourne les termes triés par degré total.
+    /// (Allocation locale ici car utilisée pour l'affichage et les compositions, moins critiques que les boucles de calcul)
+    pub fn terms(&self) -> Vec<(Vec<usize>, f64)> {
+        let mut terms: Vec<_> = self
+            .coeffs
+            .iter()
+            .map(|(&idx, &c)| (self.decode(idx), c))
+            .collect();
         terms.sort_by_key(|(e, _)| Self::total_degree(e));
         terms
     }
@@ -125,16 +160,17 @@ impl Polynomial {
     pub fn sparsify(&mut self, domain: &[Interval], threshold: f64) -> Interval {
         assert_eq!(domain.len(), self.dimension);
 
-        let to_remove: Vec<Vec<usize>> = self
+        let to_remove: Vec<usize> = self
             .coeffs
             .iter()
             .filter(|&(_, &c)| c.abs() < threshold)
-            .map(|(e, _)| e.clone())
+            .map(|(&idx, _)| idx)
             .collect();
 
         let mut dropped = interval!(0.0, 0.0).unwrap();
-        for exponents in to_remove {
-            let coeff = self.coeffs.remove(&exponents).unwrap();
+        for idx in to_remove {
+            let coeff = self.coeffs.remove(&idx).unwrap();
+            let exponents = self.decode(idx);
             let mut term = interval!(coeff, coeff).unwrap();
             for (i, &exponent) in exponents.iter().enumerate() {
                 if exponent > 0 {
@@ -152,7 +188,8 @@ impl Add for Polynomial {
     fn add(mut self, other: Polynomial) -> Polynomial {
         assert_eq!(self.dimension, other.dimension);
         assert_eq!(self.degree, other.degree);
-        for (exponents, coefficient) in other.coeffs {
+        for (&idx, &coefficient) in other.coeffs.iter() {
+            let exponents = other.decode(idx);
             let value = self.get(&exponents) + coefficient;
             self.set(&exponents, value);
         }
@@ -165,7 +202,8 @@ impl Sub for Polynomial {
     fn sub(mut self, other: Polynomial) -> Polynomial {
         assert_eq!(self.dimension, other.dimension);
         assert_eq!(self.degree, other.degree);
-        for (exponents, coefficient) in other.coeffs {
+        for (&idx, &coefficient) in other.coeffs.iter() {
+            let exponents = other.decode(idx);
             let value = self.get(&exponents) - coefficient;
             self.set(&exponents, value);
         }
@@ -179,8 +217,10 @@ impl Mul for Polynomial {
         assert_eq!(self.dimension, other.dimension);
         let degree = self.degree + other.degree;
         let mut result = Polynomial::new(self.dimension, degree);
-        for (e1, c1) in &self.coeffs {
-            for (e2, c2) in &other.coeffs {
+        for (&idx1, &c1) in self.coeffs.iter() {
+            let e1 = self.decode(idx1);
+            for (&idx2, &c2) in other.coeffs.iter() {
+                let e2 = other.decode(idx2);
                 let exponents: Vec<usize> = e1.iter().zip(e2.iter()).map(|(a, b)| a + b).collect();
                 let value = result.get(&exponents) + c1 * c2;
                 result.set(&exponents, value);
@@ -191,14 +231,14 @@ impl Mul for Polynomial {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct PolyKey(Vec<(Vec<usize>, u64)>);
+struct PolyKey(Vec<(usize, u64)>);
 
 impl PolyKey {
     fn from(p: &Polynomial) -> Self {
-        let mut v: Vec<(Vec<usize>, u64)> = p
-            .terms()
-            .into_iter()
-            .map(|(e, c)| (e.clone(), c.to_bits()))
+        let mut v: Vec<(usize, u64)> = p
+            .coeffs
+            .iter()
+            .map(|(&idx, &c)| (idx, c.to_bits()))
             .collect();
         v.sort();
         PolyKey(v)
@@ -318,7 +358,7 @@ impl TaylorModel {
                 let mut new_exp = exponents.clone();
                 new_exp[time_var] += 1;
                 let k = new_exp[time_var] as f64;
-                let value = antideriv.get(&new_exp) + *coeff / k;
+                let value = antideriv.get(&new_exp) + coeff / k;
                 antideriv.set(&new_exp, value);
             }
             let (r, s) = antideriv.split(self.order);
@@ -348,7 +388,7 @@ impl TaylorModel {
         for (exponents, coeff) in self.polynomial.terms() {
             let factor = t.powi(exponents[time_var] as i32);
             let new_exp = exponents[..new_dim].to_vec();
-            let value = new_poly.get(&new_exp) + *coeff * factor;
+            let value = new_poly.get(&new_exp) + coeff * factor;
             new_poly.set(&new_exp, value);
         }
 
@@ -366,7 +406,7 @@ impl TaylorModel {
         for (exponents, coeff) in self.polynomial.terms() {
             let mut new_exp = exponents.clone();
             new_exp.push(0);
-            new_poly.set(&new_exp, *coeff);
+            new_poly.set(&new_exp, coeff);
         }
 
         let mut new_domain = self.domain.clone();
@@ -473,7 +513,7 @@ impl fmt::Display for TaylorModel {
             let mut first = true;
             for (exponents, coefficient) in terms {
                 if !first {
-                    if *coefficient >= 0.0 {
+                    if coefficient >= 0.0 {
                         write!(f, " + {:.6}", coefficient)?;
                     } else {
                         write!(f, " - {:.6}", coefficient.abs())?;
@@ -509,7 +549,7 @@ impl Polynomial {
 
         let mut result = TaylorModel::constant(0.0, dim, order, domain.clone());
         for (exponents, coeff) in self.terms() {
-            let mut term = TaylorModel::constant(*coeff, dim, order, domain.clone());
+            let mut term = TaylorModel::constant(coeff, dim, order, domain.clone());
             for (j, &e) in exponents.iter().enumerate() {
                 if e > 0 {
                     term = term * args[j].powi(e);
