@@ -1,3 +1,7 @@
+use crate::{
+    factorial_interval,
+    integration::{GaussLegendreRule, GaussianRule},
+};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -32,7 +36,6 @@ pub struct LocalCell {
 
 /// Newtype wrapper giving `LocalCell` a total order based on `error_bound`,
 /// so cells can live in a `BinaryHeap` (a max-heap on `error_bound`).
-///
 struct HeapCell(LocalCell);
 
 impl PartialEq for HeapCell {
@@ -168,6 +171,54 @@ where
     }
 }
 
+//Gauss legendre
+pub struct GaussLegendre<'a, F2N> {
+    pub rule: &'a GaussLegendreRule,
+    pub f_2n: F2N,
+}
+
+impl<F, F2N> LocalQuadrature<F> for GaussLegendre<'_, F2N>
+where
+    F: Fn(Interval) -> Interval,
+    F2N: Fn(Interval) -> Interval,
+{
+    fn integrate_cell(&self, f: &F, a: f64, b: f64) -> Result<LocalCell, IntervalError> {
+        let ia = interval!(a, a)?;
+        let ib = interval!(b, b)?;
+
+        let (nodes, weights) = self.rule.transported(ia, ib)?;
+
+        let point_terms: Vec<Interval> = nodes
+            .iter()
+            .zip(weights.iter())
+            .map(|(&x, &w)| w * f(x))
+            .collect();
+
+        let half = (ib - ia) / TWO;
+        let point_value = pairwise_sum(&point_terms) * half;
+
+        let sub = interval!(a, b)?;
+
+        let n = self.rule.order();
+        let fact_2n = factorial_interval(2 * n)?;
+
+        let c_n = self.rule.c_n(ia, ib);
+        let coeff = c_n / fact_2n;
+
+        let error_term = (self.f_2n)(sub) * coeff;
+        let enclosure = point_value + error_term;
+
+        let error_bound = error_term.inf().abs().max(error_term.sup().abs());
+
+        Ok(LocalCell {
+            a,
+            b,
+            enclosure,
+            error_bound,
+        })
+    }
+}
+
 pub fn adaptive_integration<F, M>(
     f: F,
     method: M,
@@ -291,6 +342,31 @@ mod tests {
             |x: Interval| x.exp(),
             Simpson {
                 f_4: |x: Interval| x.exp(),
+            },
+            0.0,
+            10.0,
+            1e-10,
+            1_000,
+        )
+        .unwrap();
+
+        let exact = 10.0_f64.exp() - 1.0;
+
+        println!("Result: {}", result);
+        println!("Exact value: {}", exact);
+        println!("Width: {:.17e}", result.wid());
+
+        assert!(result.contains(exact));
+    }
+    #[test]
+    fn test_gauss_legendre_adaptive_exp() {
+        let rule = GaussLegendreRule::new(5);
+
+        let result = adaptive_integration(
+            |x: Interval| x.exp(),
+            GaussLegendre {
+                rule: &rule,
+                f_2n: |x: Interval| x.exp(), // f^(10)(x) = exp(x)
             },
             0.0,
             10.0,

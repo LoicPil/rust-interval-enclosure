@@ -8,3 +8,4 @@ inari = "2.0.0"
 #matplotlib = { git = "https://github.com/Chris00/rust-matplotlib.git", branch = "dev" }
 matplotlib = { path = "/home/piletteloic/Documents/Projects/Active/rust-matplotlib" }
 nalgebra = "0.35.0"
+rug = "1.30"

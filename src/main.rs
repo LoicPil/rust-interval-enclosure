@@ -6,6 +6,7 @@ use interval_enclosure::integration::{
     GaussLegendreRule, GaussianRule, gaussian_certified, midpoint_certified, simpson_certified,
     trapezoidal_certified,
 };
+use interval_enclosure::ivp::{RK4, euler_integrate, rk_integrate};
 
 use interval_enclosure::{f, fprime, hausdorff_nested, range_enclosure, range_enclosure_order1};
 
@@ -615,25 +616,132 @@ fn run_gauss_width_vs_h() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_ivp_euler_demo() -> Result<(), Box<dyn std::error::Error>> {
+    let field = |_t: Interval, u: Interval| -u + u.cos();
+
+    let u0 = interval!(0.99, 1.01).unwrap();
+    let trace = euler_integrate(&field, 0.0, u0, 0.1, 20);
+
+    let ts: Vec<f64> = trace.iter().map(|(t, _)| *t).collect();
+    let los: Vec<f64> = trace.iter().map(|(_, u)| u.inf()).collect();
+    let his: Vec<f64> = trace.iter().map(|(_, u)| u.sup()).collect();
+
+    println!();
+    println!("===== IVP Euler demo =====");
+    for (t, u) in &trace {
+        println!(
+            "t={:.2} | U=[{:.6}, {:.6}] | width={:.6e}",
+            t,
+            u.inf(),
+            u.sup(),
+            u.sup() - u.inf()
+        );
+    }
+
+    let (fig, [[mut ax]]) = subplots()?;
+
+    ax.xy(&ts, &los)
+        .fmt("o-")
+        .markersize(6.0)
+        .color([1.0, 0.0, 0.0])
+        .label("U_lo(t)")
+        .plot();
+
+    ax.xy(&ts, &his)
+        .fmt("o-")
+        .markersize(6.0)
+        .color([0.0, 0.0, 1.0])
+        .label("U_hi(t)")
+        .plot();
+
+    ax.set_xlabel("$t$");
+    ax.set_ylabel("$U(t)$");
+
+    ax.grid();
+    ax.minorticks_on();
+    ax.legend(std::iter::empty());
+
+    fig.save().to_file("ivp_euler.pdf")?;
+
+    Ok(())
+}
+fn run_ivp_rk_demo() -> Result<(), Box<dyn std::error::Error>> {
+    let field = |_t: Interval, u: Interval| -u + u.cos();
+    // let v0 = interval!(20.0, 20.0).unwrap();
+    // let theta = interval!(std::f64::consts::FRAC_PI_4, std::f64::consts::FRAC_PI_4).unwrap();
+    // let g = interval!(9.81, 9.81).unwrap();
+    //
+    // let field =
+    //     move |x: Interval, _y: Interval| theta.tan() - g / (v0.powi(2) * theta.cos().powi(2)) * x;
+
+    let u0 = interval!(0.99, 1.01).unwrap();
+    let trace = rk_integrate(&field, &RK4, 0.0, u0, 0.1, 20);
+
+    let ts: Vec<f64> = trace.iter().map(|(t, _)| *t).collect();
+    let los: Vec<f64> = trace.iter().map(|(_, u)| u.inf()).collect();
+    let his: Vec<f64> = trace.iter().map(|(_, u)| u.sup()).collect();
+
+    println!();
+    println!("===== IVP Runge-Kutta  demo =====");
+    for (t, u) in &trace {
+        println!(
+            "t={:.2} | U=[{:.6}, {:.6}] | width={:.6e}",
+            t,
+            u.inf(),
+            u.sup(),
+            u.sup() - u.inf()
+        );
+    }
+
+    let (fig, [[mut ax]]) = subplots()?;
+
+    ax.xy(&ts, &los)
+        .fmt("o-")
+        .markersize(6.0)
+        .color([1.0, 0.0, 0.0])
+        .label("U_lo(t)")
+        .plot();
+
+    ax.xy(&ts, &his)
+        .fmt("o-")
+        .markersize(6.0)
+        .color([0.0, 0.0, 1.0])
+        .label("U_hi(t)")
+        .plot();
+
+    ax.set_xlabel("$t$");
+    ax.set_ylabel("$U(t)$");
+
+    ax.grid();
+    ax.minorticks_on();
+    ax.legend(std::iter::empty());
+
+    fig.save().to_file("ivp_rk.pdf")?;
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // run_convergence_graph()?;
     //
     // run_midpoint_demo()?;
-    //
+
     // run_gauss_demo()?;
-    //
+
     // run_quadrature_convergence()?;
     // run_gauss_orders()?;
 
-    run_gauss_convergence_rates()?;
+    // run_gauss_convergence_rates()?;
 
-    print_gauss_legendre(5);
-    print_gauss_legendre(10);
-
-    check_gauss_legendre(5);
-    check_gauss_legendre(10);
-
-    run_gauss_width_vs_h()?;
+    // print_gauss_legendre(5);
+    // print_gauss_legendre(10);
+    //
+    // check_gauss_legendre(5);
+    // check_gauss_legendre(10);
+    //
+    // run_gauss_width_vs_h()?;
+    run_ivp_euler_demo()?;
+    run_ivp_rk_demo()?;
 
     Ok(())
 }

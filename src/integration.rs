@@ -1,7 +1,7 @@
+use crate::factorial_interval;
 use inari::{Interval, IntervalError, const_interval, interval};
 use nalgebra::{DMatrix, SymmetricEigen};
 
-const ONE: Interval = const_interval!(1.0, 1.0);
 const ZERO: Interval = const_interval!(0.0, 0.0);
 const TWO: Interval = const_interval!(2.0, 2.0);
 const FOUR: Interval = const_interval!(4.0, 4.0);
@@ -59,7 +59,7 @@ where
         contributions.push(point_value + error_term);
     }
 
-    Ok(pairwise_sum(&contributions))
+    Ok(pairwise_sum(&contributions)) // pas possible pairwise_sum(&contributions)*h ? 
 }
 
 /// Computes a certified trapezoidal quadrature enclosure.
@@ -202,11 +202,7 @@ where
     let h = (b - a) / i_n;
     let two_n = 2 * rule.order();
 
-    let mut fact_2n = ONE;
-
-    for k in 1..=two_n {
-        fact_2n = fact_2n * interval!(k as f64, k as f64)?; // dois je faire k.next_down(), k.next_up() ?
-    }
+    let fact_2n = factorial_interval(two_n)?;
 
     let mut contributions = Vec::with_capacity(n as usize);
 
@@ -419,17 +415,9 @@ impl GaussianRule for GaussLegendreRule {
 
         let half = (b - a) / TWO;
 
-        let mut fact_n = ONE;
+        let fact_n = factorial_interval(n).unwrap();
 
-        for k in 1..=n {
-            fact_n = fact_n * interval!(k as f64, k as f64).unwrap();
-        }
-
-        let mut fact_2n = ONE;
-
-        for k in 1..=(2 * n) {
-            fact_2n = fact_2n * interval!(k as f64, k as f64).unwrap();
-        }
+        let fact_2n = factorial_interval(2 * n).unwrap();
 
         let two_pow_n = TWO.powi(n as i32);
 
@@ -785,7 +773,10 @@ mod tests {
                 result.inf(),
                 result.sup(),
                 result.contains(exact),
-                hausdorff_nested(result, interval!(exact, exact).unwrap())
+                hausdorff_nested(
+                    result,
+                    interval!(exact.next_down(), exact.next_up()).unwrap()
+                )
             );
 
             assert!(

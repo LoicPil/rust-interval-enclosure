@@ -1,9 +1,13 @@
 use core::f64;
-use inari::{Interval, interval};
+use inari::{Interval, IntervalError, const_interval, interval};
 
 pub mod adaptative_integration;
 pub mod integration;
+pub mod ivp;
 pub mod matrix;
+pub mod ode;
+pub mod taylor;
+pub mod timing;
 pub mod wilkinson;
 
 pub fn f(x: Interval) -> Interval {
@@ -78,6 +82,17 @@ pub fn hausdorff_nested(inner: Interval, outer: Interval) -> f64 {
     let d_hi = (outer.sup() - inner.sup()).abs();
     d_lo.max(d_hi)
 }
+
+const ONE: Interval = const_interval!(1.0, 1.0);
+
+pub fn factorial_interval(n: usize) -> Result<Interval, IntervalError> {
+    let mut fact = ONE;
+    for k in 1..=n {
+        fact = fact * interval!(k as f64, k as f64)?;
+    }
+    Ok(fact)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,7 +103,6 @@ mod tests {
         let adaptive = crate::adaptative_integration::adaptive_integration(
             |x: Interval| x.sin(),
             crate::adaptative_integration::Midpoint {
-                // Pour f(x) = sin(x), f''(x) = -sin(x)
                 f_pp: |x: Interval| -x.sin(),
             },
             0.0,
@@ -100,10 +114,10 @@ mod tests {
 
         let uniform = crate::integration::midpoint_certified(
             |x: Interval| x.sin(),
-            |x: Interval| x.sin(),
+            |x: Interval| -x.sin(),
             0.0,
             PI,
-            1000,
+            1_000,
         )
         .unwrap();
 
