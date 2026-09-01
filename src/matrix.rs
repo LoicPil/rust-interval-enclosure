@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use inari::Interval;
 
 fn matmul_naive(a: &[Interval], b: &[Interval], m: usize, k: usize, n: usize) -> Vec<Interval> {

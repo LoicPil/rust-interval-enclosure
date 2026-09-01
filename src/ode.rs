@@ -131,10 +131,6 @@ pub fn bunger_step(
 ) -> Option<Vec<TaylorModel>> {
     crate::taylor::clear_caches();
     let polynomial = picard_iteration(initial.clone(), f);
-    // eprintln!(
-    //     "poly[0] term count: {}",
-    //     polynomial[0].polynomial.terms().len()
-    // );
     verify_remainder(
         &polynomial,
         &initial,
@@ -352,12 +348,12 @@ fn linear_decompose(p: &[TaylorModel]) -> (Vec<Vec<f64>>, Vec<TaylorModel>, Vec<
         for (exponents, coeff) in p[i].polynomial.terms() {
             let deg: usize = exponents.iter().sum();
             if deg == 0 {
-                c[i] = *coeff;
+                c[i] = coeff;
             } else if deg == 1 {
                 let j = exponents.iter().position(|&e| e == 1).unwrap();
-                a[i][j] = *coeff;
+                a[i][j] = coeff;
             } else {
-                b_poly.set(exponents, *coeff);
+                b_poly.set(&exponents, coeff);
             }
         }
         b.push(TaylorModel {
@@ -379,7 +375,7 @@ pub struct Preconditioned {
 pub fn precondition(
     p_star_l: &[TaylorModel],
     q_r: &[TaylorModel],
-    blunt_tau: f64,
+    blunt_tau: Option<f64>, // CHANGEMENT ICI : Option<f64> au lieu de f64
 ) -> Preconditioned {
     let n = p_star_l.len();
     let dim = p_star_l[0].polynomial.dimension;
@@ -388,17 +384,21 @@ pub fn precondition(
 
     let (a, b, c) = linear_decompose(p_star_l);
 
-    // Blunting still guards against a near-singular A before decomposing —
-    // orthogonal Q can't blow up, but R's diagonal can vanish if A is rank-deficient.
-    let min_pivot = linalg::smallest_pivot_magnitude(&a);
-    let a_used = if min_pivot < blunt_tau {
-        let mut a2 = a.clone();
-        for i in 0..n {
-            a2[i][i] += blunt_tau;
+    // Blunting only applied if Some(tau) is provided
+    let a_used = match blunt_tau {
+        Some(tau) => {
+            let min_pivot = linalg::smallest_pivot_magnitude(&a);
+            if min_pivot < tau {
+                let mut a2 = a.clone();
+                for i in 0..n {
+                    a2[i][i] += tau;
+                }
+                a2
+            } else {
+                a
+            }
         }
-        a2
-    } else {
-        a
+        None => a, // Pas de blunting
     };
 
     let (q_mat, r_mat) = linalg::qr_pivoted(&a_used);
@@ -422,7 +422,7 @@ pub fn precondition(
                 if r_mat[i][j] != 0.0 {
                     let mut poly = q_r[j].polynomial.clone();
                     for (exponents, coeff) in q_r[j].polynomial.terms() {
-                        poly.set(exponents, *coeff * r_mat[i][j]);
+                        poly.set(&exponents, coeff * r_mat[i][j]);
                     }
                     let scaled = TaylorModel {
                         polynomial: poly,
@@ -439,7 +439,7 @@ pub fn precondition(
                 if q_t[i][j] != 0.0 {
                     let mut poly = composed[j].polynomial.clone();
                     for (exponents, coeff) in composed[j].polynomial.terms() {
-                        poly.set(exponents, *coeff * q_t[i][j]);
+                        poly.set(&exponents, coeff * q_t[i][j]);
                     }
                     let scaled = TaylorModel {
                         polynomial: poly,
@@ -469,7 +469,7 @@ pub fn precondition(
         .map(|(tm, &si)| {
             let mut poly = tm.polynomial.clone();
             for (exponents, coeff) in tm.polynomial.terms() {
-                poly.set(exponents, *coeff * si);
+                poly.set(&exponents, coeff * si);
             }
             TaylorModel {
                 polynomial: poly,
@@ -512,7 +512,9 @@ pub fn solve_bunger_preconditioned(
     n_steps: usize,
     options: &BungerOptions,
 ) -> Result<Vec<(f64, Vec<Interval>)>, String> {
-    let blunt_tau = options.blunt_tau.unwrap_or(1e-8);
+    // SUPPRESSION du unwrap_or ici : on passe directement l'Option
+    let blunt_tau = options.blunt_tau;
+
     let n = initial.len();
     let dim = initial[0].polynomial.dimension;
     let order = initial[0].order;
@@ -537,13 +539,12 @@ pub fn solve_bunger_preconditioned(
             .ok_or_else(|| format!("verification failed at step {} (t = {})", step, t))?;
 
         t += options.h;
-        // in solve_bunger_preconditioned's loop, right after `t += options.h;`
         if step % 100 == 0 {
             eprintln!("step {} / {}, t = {:.3}", step, n_steps, t);
         }
         let p_star_l = endpoint(&enclosure, options.h);
 
-        let before = crate::taylor::compose(&p_star_l, &q_r);
+        let _before = crate::taylor::compose(&p_star_l, &q_r);
 
         let Preconditioned {
             q_l: new_q_l,
@@ -551,16 +552,6 @@ pub fn solve_bunger_preconditioned(
         } = precondition(&p_star_l, &q_r, blunt_tau);
 
         let after = crate::taylor::compose(&new_q_l, &new_q_r);
-
-        // DEBUG
-        // for i in 0..n {
-        //     println!(
-        //         "component {}:\n  before = {}\n  after  = {}",
-        //         i,
-        //         before[i].range(),
-        //         after[i].range()
-        //     );
-        // }
 
         result.push((t, ranges(&after)));
 

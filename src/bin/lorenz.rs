@@ -1,8 +1,8 @@
 use inari::Interval;
-use matplotlib::pyplot::subplots;
-
 use interval_enclosure::ode::{BungerOptions, solve};
 use interval_enclosure::taylor::TaylorModel;
+use interval_enclosure::timed;
+use matplotlib::pyplot::subplots;
 
 // ============================================================
 // Configuration
@@ -11,7 +11,7 @@ use interval_enclosure::taylor::TaylorModel;
 const ORDER: usize = 10;
 
 const T0: f64 = 0.0;
-const TF: f64 = 100.0;
+const TF: f64 = 3.0;
 
 const H: f64 = 0.01;
 
@@ -297,13 +297,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = BungerOptions {
         order: ORDER,
         h: H,
-        epsilon: 0.01,
+        epsilon: 0.1,
         delta: 1e-12,
         max_inflation_iterations: 50,
 
         // Kept available for future blunting experiments.
         // The current QR preconditioner does not use it.
-        blunt_tau: Some(1e-8),
+        blunt_tau: None,
 
         // This is the important part:
         // use Bünger's QR preconditioning.
@@ -314,8 +314,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Verified integration
     // ========================================================
 
-    let result = solve(initial, lorenz, T0, TF, &options)
-        .map_err(|e| format!("Bünger solver failed: {}", e))?;
+    let result = timed!(
+        "solve",
+        solve(initial, lorenz, T0, TF, &options)
+            .map_err(|e| format!("Bünger solver failed: {}", e))
+    )?;
 
     // ========================================================
     // Final enclosure
