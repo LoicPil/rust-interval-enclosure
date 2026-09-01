@@ -8,24 +8,23 @@ pub const SPARSITY_THRESHOLD: f64 = 1e-16;
 
 #[derive(Clone, Debug)]
 pub struct Polynomial {
-    coeffs: Vec<f64>,
-    /// Liste des index non nuls pour itérer rapidement sans parcourir tout le vecteur.
-    active_indices: Vec<usize>,
+    // Utilisation d'une HashMap pour ne stocker que les coefficients non nuls.
+    // Clé = index linéaire (usize), Valeur = coefficient (f64)
+    coeffs: HashMap<usize, f64>,
     degree: usize,
     pub dimension: usize,
 }
 
 impl Polynomial {
     pub fn new(dimension: usize, degree: usize) -> Self {
-        let size = (degree + 1).pow(dimension as u32);
         Self {
-            coeffs: vec![0.0; size],
-            active_indices: Vec::new(),
+            coeffs: HashMap::new(),
             degree,
             dimension,
         }
     }
 
+    /// Encode un vecteur d'exposants en un index unique (base = degree + 1)
     #[inline]
     fn index(&self, exponents: &[usize]) -> usize {
         let base = self.degree + 1;
@@ -38,6 +37,7 @@ impl Polynomial {
         idx
     }
 
+    /// Décode un index linéaire vers un vecteur d'exposants
     fn decode(&self, mut idx: usize) -> Vec<usize> {
         let base = self.degree + 1;
         let mut exponents = vec![0; self.dimension];
@@ -50,7 +50,7 @@ impl Polynomial {
 
     #[inline]
     pub fn get(&self, exponents: &[usize]) -> f64 {
-        self.coeffs[self.index(exponents)]
+        *self.coeffs.get(&self.index(exponents)).unwrap_or(&0.0)
     }
 
     #[inline]
@@ -62,13 +62,11 @@ impl Polynomial {
             value,
             exponents
         );
-
         let idx = self.index(exponents);
-        self.coeffs[idx] = value;
-
-        // Mise à jour de la liste des indices actifs
-        if value != 0.0 && !self.active_indices.contains(&idx) {
-            self.active_indices.push(idx);
+        if value == 0.0 {
+            self.coeffs.remove(&idx);
+        } else {
+            self.coeffs.insert(idx, value);
         }
     }
 
@@ -94,8 +92,7 @@ impl Polynomial {
     pub fn evaluate(&self, domain: &[Interval]) -> Interval {
         assert_eq!(domain.len(), self.dimension);
         let mut result = interval!(0.0, 0.0).unwrap();
-        for &idx in &self.active_indices {
-            let coefficient = self.coeffs[idx];
+        for (&idx, &coefficient) in &self.coeffs {
             let exponents = self.decode(idx);
             let mut term = interval!(coefficient, coefficient).unwrap();
             for (i, exponent) in exponents.iter().enumerate() {
@@ -111,8 +108,7 @@ impl Polynomial {
     pub fn split(&self, order: usize) -> (Polynomial, Polynomial) {
         let mut low = Polynomial::new(self.dimension, order);
         let mut high = Polynomial::new(self.dimension, self.degree);
-        for &idx in &self.active_indices {
-            let coefficient = self.coeffs[idx];
+        for (&idx, &coefficient) in &self.coeffs {
             let exponents = self.decode(idx);
             if Self::total_degree(&exponents) <= order {
                 low.set(&exponents, coefficient);
@@ -126,8 +122,7 @@ impl Polynomial {
     pub fn sample(&self, point: &[f64]) -> f64 {
         assert_eq!(point.len(), self.dimension);
         let mut result = 0.0;
-        for &idx in &self.active_indices {
-            let coefficient = self.coeffs[idx];
+        for (&idx, &coefficient) in &self.coeffs {
             let exponents = self.decode(idx);
             let mut term = coefficient;
             for (x, exponent) in point.iter().zip(exponents.iter()) {
@@ -140,10 +135,9 @@ impl Polynomial {
 
     pub fn terms(&self) -> Vec<(Vec<usize>, f64)> {
         let mut terms: Vec<_> = self
-            .active_indices
+            .coeffs
             .iter()
-            .map(|&idx| (self.decode(idx), self.coeffs[idx]))
-            .filter(|(_, c)| *c != 0.0)
+            .map(|(&idx, &c)| (self.decode(idx), c))
             .collect();
         terms.sort_by_key(|(e, _)| Self::total_degree(e));
         terms
@@ -152,17 +146,16 @@ impl Polynomial {
     pub fn sparsify(&mut self, domain: &[Interval], threshold: f64) -> Interval {
         assert_eq!(domain.len(), self.dimension);
 
+        let to_remove: Vec<usize> = self
+            .coeffs
+            .iter()
+            .filter(|&(_, &c)| c.abs() < threshold)
+            .map(|(&idx, _)| idx)
+            .collect();
+
         let mut dropped = interval!(0.0, 0.0).unwrap();
-        let mut new_active = Vec::new();
-
-        for &idx in &self.active_indices {
-            let coeff = self.coeffs[idx];
-            if coeff == 0.0 || coeff.abs() >= threshold {
-                new_active.push(idx);
-                continue;
-            }
-
-            self.coeffs[idx] = 0.0;
+        for idx in to_remove {
+            let coeff = self.coeffs.remove(&idx).unwrap();
             let exponents = self.decode(idx);
             let mut term = interval!(coeff, coeff).unwrap();
             for (i, &exponent) in exponents.iter().enumerate() {
@@ -172,7 +165,6 @@ impl Polynomial {
             }
             dropped += term;
         }
-        self.active_indices = new_active;
         dropped
     }
 }
@@ -182,12 +174,10 @@ impl Add for Polynomial {
     fn add(mut self, other: Polynomial) -> Polynomial {
         assert_eq!(self.dimension, other.dimension);
         assert_eq!(self.degree, other.degree);
-        for &idx in &other.active_indices {
-            let val = other.coeffs[idx];
-            if self.coeffs[idx] == 0.0 && val != 0.0 {
-                self.active_indices.push(idx);
-            }
-            self.coeffs[idx] += val;
+        for (&idx, &coefficient) in other.coeffs.iter() {
+            let exponents = other.decode(idx);
+            let value = self.get(&exponents) + coefficient;
+            self.set(&exponents, value);
         }
         self
     }
@@ -198,12 +188,10 @@ impl Sub for Polynomial {
     fn sub(mut self, other: Polynomial) -> Polynomial {
         assert_eq!(self.dimension, other.dimension);
         assert_eq!(self.degree, other.degree);
-        for &idx in &other.active_indices {
-            let val = other.coeffs[idx];
-            if self.coeffs[idx] == 0.0 && val != 0.0 {
-                self.active_indices.push(idx);
-            }
-            self.coeffs[idx] -= val;
+        for (&idx, &coefficient) in other.coeffs.iter() {
+            let exponents = other.decode(idx);
+            let value = self.get(&exponents) - coefficient;
+            self.set(&exponents, value);
         }
         self
     }
@@ -241,17 +229,11 @@ impl Mul for Polynomial {
             idx
         }
 
-        // OPTIMISATION : On itère uniquement sur les termes actifs
-        for &idx1 in &self.active_indices {
-            let c1 = self.coeffs[idx1];
-            for &idx2 in &other.active_indices {
-                let c2 = other.coeffs[idx2];
+        for (&idx1, &c1) in self.coeffs.iter() {
+            for (&idx2, &c2) in other.coeffs.iter() {
                 let new_idx = combine_idx(idx1, idx2, base_in, base_out, self.dimension);
-
-                if result.coeffs[new_idx] == 0.0 && c1 * c2 != 0.0 {
-                    result.active_indices.push(new_idx);
-                }
-                result.coeffs[new_idx] += c1 * c2;
+                let value = result.coeffs.get(&new_idx).unwrap_or(&0.0) + c1 * c2;
+                result.coeffs.insert(new_idx, value);
             }
         }
         result
@@ -264,9 +246,9 @@ struct PolyKey(Vec<(usize, u64)>);
 impl PolyKey {
     fn from(p: &Polynomial) -> Self {
         let mut v: Vec<(usize, u64)> = p
-            .active_indices
+            .coeffs
             .iter()
-            .map(|&idx| (idx, p.coeffs[idx].to_bits()))
+            .map(|(&idx, &c)| (idx, c.to_bits()))
             .collect();
         v.sort();
         PolyKey(v)
@@ -274,6 +256,7 @@ impl PolyKey {
 }
 
 thread_local! {
+    // Vos caches originaux, intacts !
     static MUL_CACHE: RefCell<HashMap<(PolyKey, PolyKey), (Polynomial, Interval, Interval, Interval)>> =
         RefCell::new(HashMap::new());
     static INTEGRATE_CACHE: RefCell<HashMap<PolyKey, (Polynomial, Interval)>> =
@@ -285,6 +268,9 @@ pub fn clear_caches() {
     INTEGRATE_CACHE.with(|c| c.borrow_mut().clear());
 }
 
+// ... (Le reste des implémentations TaylorModel, Add, Sub, Mul, Display, compose_tm, etc. reste strictement identique) ...
+// Je réintègre ici le reste pour que le fichier soit complet et compilable.
+
 #[derive(Clone, Debug)]
 pub struct TaylorModel {
     pub polynomial: Polynomial,
@@ -292,10 +278,6 @@ pub struct TaylorModel {
     pub domain: Vec<Interval>,
     pub order: usize,
 }
-
-// ... (Le reste des implémentations TaylorModel reste identique) ...
-// Je réintègre ici les implémentations Add, Sub, Mul, Display, compose_tm, etc.
-// afin que le fichier soit complet et compilable.
 
 impl TaylorModel {
     pub fn constant(value: f64, dimension: usize, order: usize, domain: Vec<Interval>) -> Self {
