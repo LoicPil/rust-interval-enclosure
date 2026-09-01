@@ -267,6 +267,72 @@ pub mod linalg {
         }
         min_pivot
     }
+    /// Permuted QR factorization A·P = Q·R̃, R := R̃·Pᵀ (Lohner's method, §3.3).
+    /// P sorts columns of `a` by descending Euclidean norm. Q is orthogonal
+    /// (Q⁻¹ = Qᵀ, always well-conditioned); R is returned already un-permuted,
+    /// i.e. in the ORIGINAL variable order, so A ≈ Q·R directly.
+    pub fn qr_pivoted(a: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+        let n = a.len();
+        let cols: Vec<Vec<f64>> = (0..n).map(|j| (0..n).map(|i| a[i][j]).collect()).collect();
+        let norms: Vec<f64> = cols
+            .iter()
+            .map(|c| c.iter().map(|x| x * x).sum::<f64>().sqrt())
+            .collect();
+
+        // perm[k] = original column index placed at pivot position k
+        let mut perm: Vec<usize> = (0..n).collect();
+        perm.sort_by(|&i, &j| norms[j].partial_cmp(&norms[i]).unwrap());
+
+        let mut q_cols: Vec<Vec<f64>> = Vec::with_capacity(n);
+        let mut r_tilde = vec![vec![0.0; n]; n]; // upper-triangular, permuted-order columns
+
+        for k in 0..n {
+            let mut v = cols[perm[k]].clone();
+            for j in 0..k {
+                let r_jk: f64 = (0..n).map(|i| q_cols[j][i] * v[i]).sum();
+                r_tilde[j][k] = r_jk;
+                for i in 0..n {
+                    v[i] -= r_jk * q_cols[j][i];
+                }
+            }
+            let norm_v = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+            r_tilde[k][k] = norm_v;
+            if norm_v > 1e-14 {
+                q_cols.push(v.iter().map(|x| x / norm_v).collect());
+            } else {
+                // Degenerate direction (near rank-deficient A): fall back to a
+                // coordinate vector orthogonalized against what's already built.
+                let mut e = vec![0.0; n];
+                e[k] = 1.0;
+                for j in 0..k {
+                    let d: f64 = (0..n).map(|i| q_cols[j][i] * e[i]).sum();
+                    for i in 0..n {
+                        e[i] -= d * q_cols[j][i];
+                    }
+                }
+                let ne = e.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-300);
+                q_cols.push(e.iter().map(|x| x / ne).collect());
+            }
+        }
+
+        let mut q = vec![vec![0.0; n]; n];
+        for i in 0..n {
+            for k in 0..n {
+                q[i][k] = q_cols[k][i];
+            }
+        }
+
+        // Un-permute columns: R := R̃·Pᵀ, so R's column `perm[k]` is R̃'s column k.
+        let mut r = vec![vec![0.0; n]; n];
+        for k in 0..n {
+            let orig_col = perm[k];
+            for row in 0..n {
+                r[row][orig_col] = r_tilde[row][k];
+            }
+        }
+
+        (q, r)
+    }
 }
 
 /// Splits space-only TMs p(x) into (A, b(x), c): linear coefficients,
@@ -322,6 +388,8 @@ pub fn precondition(
 
     let (a, b, c) = linear_decompose(p_star_l);
 
+    // Blunting still guards against a near-singular A before decomposing —
+    // orthogonal Q can't blow up, but R's diagonal can vanish if A is rank-deficient.
     let min_pivot = linalg::smallest_pivot_magnitude(&a);
     let a_used = if min_pivot < blunt_tau {
         let mut a2 = a.clone();
@@ -332,7 +400,12 @@ pub fn precondition(
     } else {
         a
     };
-    let a_inv = linalg::invert(&a_used, blunt_tau);
+
+    let (q_mat, r_mat) = linalg::qr_pivoted(&a_used);
+    // Q is orthogonal ⇒ Q⁻¹ = Qᵀ, trivially and always well-conditioned.
+    let q_t: Vec<Vec<f64>> = (0..n)
+        .map(|i| (0..n).map(|j| q_mat[j][i]).collect())
+        .collect();
 
     let i_l_star: Vec<Interval> = p_star_l.iter().map(|tm| tm.remainder).collect();
     let mut composed: Vec<TaylorModel> = b.iter().map(|bi| bi.polynomial.compose_tm(q_r)).collect();
@@ -343,15 +416,34 @@ pub fn precondition(
     let u_plus_f: Vec<TaylorModel> = (0..n)
         .map(|i| {
             let mut acc = TaylorModel::constant(0.0, dim, order, domain.clone());
+
+            // term 1: (Rx) ∘ (q_r+J_r) = sum_j R[i][j] * q_r[j]
             for j in 0..n {
-                if a_inv[i][j] != 0.0 {
-                    let mut poly = composed[j].polynomial.clone();
-                    for (exponents, coeff) in composed[j].polynomial.terms() {
-                        poly.set(exponents, *coeff * a_inv[i][j]);
+                if r_mat[i][j] != 0.0 {
+                    let mut poly = q_r[j].polynomial.clone();
+                    for (exponents, coeff) in q_r[j].polynomial.terms() {
+                        poly.set(exponents, *coeff * r_mat[i][j]);
                     }
                     let scaled = TaylorModel {
                         polynomial: poly,
-                        remainder: composed[j].remainder * scalar(a_inv[i][j]),
+                        remainder: q_r[j].remainder * scalar(r_mat[i][j]),
+                        domain: domain.clone(),
+                        order,
+                    };
+                    acc = acc + scaled;
+                }
+            }
+
+            // term 2: Q^{-1} b(x) ∘ (q_r+J_r) + Q^{-1} I*_ℓ  (folded into `composed`)
+            for j in 0..n {
+                if q_t[i][j] != 0.0 {
+                    let mut poly = composed[j].polynomial.clone();
+                    for (exponents, coeff) in composed[j].polynomial.terms() {
+                        poly.set(exponents, *coeff * q_t[i][j]);
+                    }
+                    let scaled = TaylorModel {
+                        polynomial: poly,
+                        remainder: composed[j].remainder * scalar(q_t[i][j]),
                         domain: domain.clone(),
                         order,
                     };
@@ -388,11 +480,12 @@ pub fn precondition(
         })
         .collect();
 
+    // q_ℓ,new := Q S⁻¹ x + c  — note: Q_mat now, NOT a_used.
     let q_l_new: Vec<TaylorModel> = (0..n)
         .map(|i| {
             let mut poly = crate::taylor::Polynomial::constant(dim, order, c[i]);
             for j in 0..n {
-                let coeff = a_used[i][j] / s[j];
+                let coeff = q_mat[i][j] / s[j];
                 if coeff != 0.0 {
                     poly = poly + crate::taylor::Polynomial::variable(dim, order, j, coeff);
                 }
@@ -411,7 +504,6 @@ pub fn precondition(
         q_r: q_r_new,
     }
 }
-
 /// Preconditioned solver: state is (q_ℓ, q_r) instead of a single q+J.
 pub fn solve_bunger_preconditioned(
     initial: Vec<TaylorModel>,
@@ -461,14 +553,14 @@ pub fn solve_bunger_preconditioned(
         let after = crate::taylor::compose(&new_q_l, &new_q_r);
 
         // DEBUG
-        for i in 0..n {
-            println!(
-                "component {}:\n  before = {}\n  after  = {}",
-                i,
-                before[i].range(),
-                after[i].range()
-            );
-        }
+        // for i in 0..n {
+        //     println!(
+        //         "component {}:\n  before = {}\n  after  = {}",
+        //         i,
+        //         before[i].range(),
+        //         after[i].range()
+        //     );
+        // }
 
         result.push((t, ranges(&after)));
 

@@ -4,6 +4,14 @@ use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
 
+/// Below this magnitude, a coefficient is dropped from the polynomial and
+/// its worst-case contribution over the domain is folded into the owning
+/// TaylorModel's remainder instead (see `TaylorModel::sparsify`). Tune this
+/// like Bünger's `sparsity_tol` (he uses 1e-20 for Lorenz, 1e-12/1e-16 for
+/// the double pendulum) — too loose inflates the remainder faster than
+/// necessary, too tight leaves term counts (and runtime) exploding.
+pub const SPARSITY_THRESHOLD: f64 = 1e-16;
+
 #[derive(Clone, Debug)]
 pub struct Polynomial {
     coeffs: HashMap<Vec<usize>, f64>,
@@ -24,6 +32,11 @@ impl Polynomial {
         *self.coeffs.get(exponents).unwrap_or(&0.0)
     }
 
+    /// Sets a coefficient. Only drops it on an EXACT zero — this is a plain
+    /// bookkeeping accessor, not a sparsity policy. Sparsification (which is
+    /// allowed to drop small-but-nonzero coefficients) must go through
+    /// `sparsify()` below, which folds the dropped range into the remainder
+    /// so the enclosure stays sound.
     pub fn set(&mut self, exponents: &[usize], value: f64) {
         assert_eq!(exponents.len(), self.dimension);
         assert!(
@@ -32,12 +45,13 @@ impl Polynomial {
             value,
             exponents
         );
-        if value <= 1e-50 {
+        if value == 0.0 {
             self.coeffs.remove(exponents);
         } else {
             self.coeffs.insert(exponents.to_vec(), value);
         }
     }
+
     pub fn constant(dimension: usize, degree: usize, value: f64) -> Self {
         let mut p = Self::new(dimension, degree);
         p.set(&vec![0; dimension], value);
@@ -102,6 +116,34 @@ impl Polynomial {
         let mut terms: Vec<_> = self.coeffs.iter().collect();
         terms.sort_by_key(|(e, _)| Self::total_degree(e));
         terms
+    }
+
+    /// Drops coefficients with |c| < threshold; returns the total range those
+    /// dropped terms could have contributed over `domain`. The caller (see
+    /// `TaylorModel::sparsify`) must fold this into the remainder so the
+    /// enclosure remains a rigorous superset even after the drop.
+    pub fn sparsify(&mut self, domain: &[Interval], threshold: f64) -> Interval {
+        assert_eq!(domain.len(), self.dimension);
+
+        let to_remove: Vec<Vec<usize>> = self
+            .coeffs
+            .iter()
+            .filter(|&(_, &c)| c.abs() < threshold)
+            .map(|(e, _)| e.clone())
+            .collect();
+
+        let mut dropped = interval!(0.0, 0.0).unwrap();
+        for exponents in to_remove {
+            let coeff = self.coeffs.remove(&exponents).unwrap();
+            let mut term = interval!(coeff, coeff).unwrap();
+            for (i, &exponent) in exponents.iter().enumerate() {
+                if exponent > 0 {
+                    term *= domain[i].powi(exponent as i32);
+                }
+            }
+            dropped += term;
+        }
+        dropped
     }
 }
 
@@ -233,6 +275,16 @@ impl TaylorModel {
         self.polynomial.evaluate(&self.domain)
     }
 
+    /// Drops small coefficients (see `SPARSITY_THRESHOLD`), folding their
+    /// worst-case range into `remainder` so the enclosure stays sound.
+    /// Called automatically at the end of `+`, `-`, `*`, and `integrate_time`
+    /// — the operations that actually grow term count.
+    pub fn sparsify(mut self, threshold: f64) -> TaylorModel {
+        let dropped = self.polynomial.sparsify(&self.domain, threshold);
+        self.remainder = self.remainder + dropped;
+        self
+    }
+
     pub fn powi(&self, exponent: usize) -> TaylorModel {
         if exponent == 0 {
             return TaylorModel::constant(
@@ -279,12 +331,13 @@ impl TaylorModel {
         let time_range = self.domain[time_var];
         let new_remainder = s_range + self.remainder * time_range;
 
-        TaylorModel {
+        let result = TaylorModel {
             polynomial: r,
             remainder: new_remainder,
             domain: self.domain.clone(),
             order: self.order,
-        }
+        };
+        result.sparsify(SPARSITY_THRESHOLD)
     }
 
     pub fn substitute_time(&self, t: f64) -> TaylorModel {
@@ -333,12 +386,13 @@ impl Add for TaylorModel {
     fn add(self, other: TaylorModel) -> TaylorModel {
         assert_eq!(self.domain, other.domain);
         assert_eq!(self.order, other.order);
-        TaylorModel {
+        let result = TaylorModel {
             polynomial: self.polynomial + other.polynomial,
             remainder: self.remainder + other.remainder,
             domain: self.domain,
             order: self.order,
-        }
+        };
+        result.sparsify(SPARSITY_THRESHOLD)
     }
 }
 
@@ -347,12 +401,13 @@ impl Sub for TaylorModel {
     fn sub(self, other: TaylorModel) -> TaylorModel {
         assert_eq!(self.domain, other.domain);
         assert_eq!(self.order, other.order);
-        TaylorModel {
+        let result = TaylorModel {
             polynomial: self.polynomial - other.polynomial,
             remainder: self.remainder - other.remainder,
             domain: self.domain,
             order: self.order,
-        }
+        };
+        result.sparsify(SPARSITY_THRESHOLD)
     }
 }
 
@@ -382,17 +437,28 @@ impl Mul for TaylorModel {
             entry
         });
 
-        let error = high_range
-            + p_range * other.remainder
-            + q_range * self.remainder
-            + self.remainder * other.remainder;
+        // G1 = s(D-x0) + p(D-x0)*F + E*(q(D-x0)+F)
+        let g1 =
+            high_range + p_range * other.remainder + self.remainder * (q_range + other.remainder);
+        // G2 = s(D-x0) + q(D-x0)*E + F*(p(D-x0)+E)
+        let g2 =
+            high_range + q_range * self.remainder + other.remainder * (p_range + self.remainder);
 
-        TaylorModel {
+        // G := G1 ∩ G2 — both individually valid, so the intersection is
+        // still sound and strictly tighter.
+        let inter = g1.intersection(g2);
+        let error = if inter.is_empty() {
+            g1.convex_hull(g2) // <- la méthode existe bien
+        } else {
+            inter
+        };
+        let result = TaylorModel {
             polynomial: low,
             remainder: error,
             domain: self.domain,
             order,
-        }
+        };
+        result.sparsify(SPARSITY_THRESHOLD)
     }
 }
 
