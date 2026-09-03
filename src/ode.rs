@@ -456,6 +456,16 @@ pub fn precondition(
         })
         .collect();
 
+    eprintln!(
+        "m = {:?}",
+        u_plus_f
+            .iter()
+            .map(|tm| {
+                let r = tm.range();
+                r.inf().abs().max(r.sup().abs())
+            })
+            .collect::<Vec<_>>()
+    );
     let s: Vec<f64> = u_plus_f
         .iter()
         .map(|tm| {
@@ -464,7 +474,7 @@ pub fn precondition(
             if m > 0.0 { 1.0 / m } else { 1.0 }
         })
         .collect();
-
+    eprintln!("s = {:?}", s);
     let q_r_new: Vec<TaylorModel> = u_plus_f
         .iter()
         .zip(s.iter())

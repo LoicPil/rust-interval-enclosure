@@ -8,7 +8,7 @@ use matplotlib::pyplot::subplots;
 // Configuration
 // ============================================================
 
-const ORDER: usize = 10;
+const ORDER: usize = 8;
 
 const T0: f64 = 0.0;
 const TF: f64 = 3.0;
