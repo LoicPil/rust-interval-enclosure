@@ -79,15 +79,18 @@ pub fn interval_subset(a: Interval, b: Interval) -> bool {
 }
 
 /// p+E ⊆ p+F for identical polynomial parts iff E ⊆ F.
-pub fn remainder_subset(a: &TaylorModel, b: &TaylorModel) -> bool {
-    interval_subset(a.remainder, b.remainder)
+pub fn remainder_subset(image: &TaylorModel, enclosure: &TaylorModel) -> bool {
+    let drift = (image.polynomial.clone() - enclosure.polynomial.clone()).evaluate(&image.domain);
+    let effective = image.remainder + drift;
+    interval_subset(effective, enclosure.remainder)
 }
 
-pub fn vector_subset(a: &[TaylorModel], b: &[TaylorModel]) -> bool {
-    assert_eq!(a.len(), b.len());
-    a.iter()
-        .zip(b.iter())
-        .all(|(ai, bi)| remainder_subset(ai, bi))
+pub fn vector_subset(image: &[TaylorModel], enclosure: &[TaylorModel]) -> bool {
+    assert_eq!(image.len(), enclosure.len());
+    image
+        .iter()
+        .zip(enclosure.iter())
+        .all(|(im, en)| remainder_subset(im, en))
 }
 
 /// Find a remainder E with K(p+E) ⊆ p+E, given the fixed polynomial `p`.
