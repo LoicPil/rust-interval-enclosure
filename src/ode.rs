@@ -130,7 +130,16 @@ pub fn bunger_step(
     options: &BungerOptions,
 ) -> Option<Vec<TaylorModel>> {
     crate::taylor::clear_caches();
+
+    // Désactiver la sparsification pendant la Picard iteration (seuil infini)
+    let old_threshold = crate::taylor::get_sparsity_threshold();
+    crate::taylor::set_sparsity_threshold(f64::INFINITY);
+
     let polynomial = picard_iteration(initial.clone(), f);
+
+    // Restaurer le seuil pour l'inflation
+    crate::taylor::set_sparsity_threshold(old_threshold);
+
     verify_remainder(
         &polynomial,
         &initial,
@@ -263,10 +272,8 @@ pub mod linalg {
         }
         min_pivot
     }
+
     /// Permuted QR factorization A·P = Q·R̃, R := R̃·Pᵀ (Lohner's method, §3.3).
-    /// P sorts columns of `a` by descending Euclidean norm. Q is orthogonal
-    /// (Q⁻¹ = Qᵀ, always well-conditioned); R is returned already un-permuted,
-    /// i.e. in the ORIGINAL variable order, so A ≈ Q·R directly.
     pub fn qr_pivoted(a: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
         let n = a.len();
         let cols: Vec<Vec<f64>> = (0..n).map(|j| (0..n).map(|i| a[i][j]).collect()).collect();
@@ -275,12 +282,11 @@ pub mod linalg {
             .map(|c| c.iter().map(|x| x * x).sum::<f64>().sqrt())
             .collect();
 
-        // perm[k] = original column index placed at pivot position k
         let mut perm: Vec<usize> = (0..n).collect();
         perm.sort_by(|&i, &j| norms[j].partial_cmp(&norms[i]).unwrap());
 
         let mut q_cols: Vec<Vec<f64>> = Vec::with_capacity(n);
-        let mut r_tilde = vec![vec![0.0; n]; n]; // upper-triangular, permuted-order columns
+        let mut r_tilde = vec![vec![0.0; n]; n];
 
         for k in 0..n {
             let mut v = cols[perm[k]].clone();
@@ -296,8 +302,6 @@ pub mod linalg {
             if norm_v > 1e-14 {
                 q_cols.push(v.iter().map(|x| x / norm_v).collect());
             } else {
-                // Degenerate direction (near rank-deficient A): fall back to a
-                // coordinate vector orthogonalized against what's already built.
                 let mut e = vec![0.0; n];
                 e[k] = 1.0;
                 for j in 0..k {
@@ -318,7 +322,6 @@ pub mod linalg {
             }
         }
 
-        // Un-permute columns: R := R̃·Pᵀ, so R's column `perm[k]` is R̃'s column k.
         let mut r = vec![vec![0.0; n]; n];
         for k in 0..n {
             let orig_col = perm[k];
@@ -375,7 +378,7 @@ pub struct Preconditioned {
 pub fn precondition(
     p_star_l: &[TaylorModel],
     q_r: &[TaylorModel],
-    blunt_tau: Option<f64>, // CHANGEMENT ICI : Option<f64> au lieu de f64
+    blunt_tau: Option<f64>,
 ) -> Preconditioned {
     let n = p_star_l.len();
     let dim = p_star_l[0].polynomial.dimension;
@@ -384,7 +387,6 @@ pub fn precondition(
 
     let (a, b, c) = linear_decompose(p_star_l);
 
-    // Blunting only applied if Some(tau) is provided
     let a_used = match blunt_tau {
         Some(tau) => {
             let min_pivot = linalg::smallest_pivot_magnitude(&a);
@@ -398,11 +400,10 @@ pub fn precondition(
                 a
             }
         }
-        None => a, // Pas de blunting
+        None => a,
     };
 
     let (q_mat, r_mat) = linalg::qr_pivoted(&a_used);
-    // Q is orthogonal ⇒ Q⁻¹ = Qᵀ, trivially and always well-conditioned.
     let q_t: Vec<Vec<f64>> = (0..n)
         .map(|i| (0..n).map(|j| q_mat[j][i]).collect())
         .collect();
@@ -417,7 +418,6 @@ pub fn precondition(
         .map(|i| {
             let mut acc = TaylorModel::constant(0.0, dim, order, domain.clone());
 
-            // term 1: (Rx) ∘ (q_r+J_r) = sum_j R[i][j] * q_r[j]
             for j in 0..n {
                 if r_mat[i][j] != 0.0 {
                     let mut poly = q_r[j].polynomial.clone();
@@ -434,7 +434,6 @@ pub fn precondition(
                 }
             }
 
-            // term 2: Q^{-1} b(x) ∘ (q_r+J_r) + Q^{-1} I*_ℓ  (folded into `composed`)
             for j in 0..n {
                 if q_t[i][j] != 0.0 {
                     let mut poly = composed[j].polynomial.clone();
@@ -480,7 +479,6 @@ pub fn precondition(
         })
         .collect();
 
-    // q_ℓ,new := Q S⁻¹ x + c  — note: Q_mat now, NOT a_used.
     let q_l_new: Vec<TaylorModel> = (0..n)
         .map(|i| {
             let mut poly = crate::taylor::Polynomial::constant(dim, order, c[i]);
@@ -504,7 +502,8 @@ pub fn precondition(
         q_r: q_r_new,
     }
 }
-/// Preconditioned solver: state is (q_ℓ, q_r) instead of a single q+J.
+
+/// Preconditioned solver.
 pub fn solve_bunger_preconditioned(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
@@ -512,9 +511,7 @@ pub fn solve_bunger_preconditioned(
     n_steps: usize,
     options: &BungerOptions,
 ) -> Result<Vec<(f64, Vec<Interval>)>, String> {
-    // SUPPRESSION du unwrap_or ici : on passe directement l'Option
     let blunt_tau = options.blunt_tau;
-
     let n = initial.len();
     let dim = initial[0].polynomial.dimension;
     let order = initial[0].order;
@@ -544,15 +541,12 @@ pub fn solve_bunger_preconditioned(
         }
         let p_star_l = endpoint(&enclosure, options.h);
 
-        let _before = crate::taylor::compose(&p_star_l, &q_r);
-
         let Preconditioned {
             q_l: new_q_l,
             q_r: new_q_r,
         } = precondition(&p_star_l, &q_r, blunt_tau);
 
         let after = crate::taylor::compose(&new_q_l, &new_q_r);
-
         result.push((t, ranges(&after)));
 
         q_l = new_q_l;
@@ -562,9 +556,7 @@ pub fn solve_bunger_preconditioned(
     Ok(result)
 }
 
-/// Single entry point: dispatches to the naive or preconditioned solver
-/// based on `options.preconditioning`, taking [t0, tf] directly instead of
-/// a precomputed step count.
+/// Single entry point.
 pub fn solve(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
@@ -587,6 +579,9 @@ pub fn solve(
     }
 }
 
+// ------------------------------------------------------------
+// Plotting functions (unchanged)
+// ------------------------------------------------------------
 pub fn plot_component(
     result: &[(f64, Vec<Interval>)],
     component: usize,

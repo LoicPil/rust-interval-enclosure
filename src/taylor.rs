@@ -6,10 +6,23 @@ use std::ops::{Add, Mul, Sub};
 
 pub const SPARSITY_THRESHOLD: f64 = 1e-16;
 
+thread_local! {
+    static CURRENT_SPARSITY_THRESHOLD: RefCell<f64> = RefCell::new(SPARSITY_THRESHOLD);
+}
+
+pub fn set_sparsity_threshold(threshold: f64) {
+    CURRENT_SPARSITY_THRESHOLD.with(|cell| *cell.borrow_mut() = threshold);
+}
+
+pub fn get_sparsity_threshold() -> f64 {
+    CURRENT_SPARSITY_THRESHOLD.with(|cell| *cell.borrow())
+}
+
+// -----------------------------------------------------------------------------
+// Polynomial
+// -----------------------------------------------------------------------------
 #[derive(Clone, Debug)]
 pub struct Polynomial {
-    // Utilisation d'une HashMap pour ne stocker que les coefficients non nuls.
-    // Clé = index linéaire (usize), Valeur = coefficient (f64)
     coeffs: HashMap<usize, f64>,
     degree: usize,
     pub dimension: usize,
@@ -24,7 +37,6 @@ impl Polynomial {
         }
     }
 
-    /// Encode un vecteur d'exposants en un index unique (base = degree + 1)
     #[inline]
     fn index(&self, exponents: &[usize]) -> usize {
         let base = self.degree + 1;
@@ -37,7 +49,6 @@ impl Polynomial {
         idx
     }
 
-    /// Décode un index linéaire vers un vecteur d'exposants
     fn decode(&self, mut idx: usize) -> Vec<usize> {
         let base = self.degree + 1;
         let mut exponents = vec![0; self.dimension];
@@ -145,6 +156,9 @@ impl Polynomial {
 
     pub fn sparsify(&mut self, domain: &[Interval], threshold: f64) -> Interval {
         assert_eq!(domain.len(), self.dimension);
+        if threshold.is_infinite() || threshold <= 0.0 {
+            return interval!(0.0, 0.0).unwrap();
+        }
 
         let to_remove: Vec<usize> = self
             .coeffs
@@ -240,6 +254,9 @@ impl Mul for Polynomial {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Caches
+// -----------------------------------------------------------------------------
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PolyKey(Vec<(usize, u64)>);
 
@@ -256,7 +273,6 @@ impl PolyKey {
 }
 
 thread_local! {
-    // Vos caches originaux, intacts !
     static MUL_CACHE: RefCell<HashMap<(PolyKey, PolyKey), (Polynomial, Interval, Interval, Interval)>> =
         RefCell::new(HashMap::new());
     static INTEGRATE_CACHE: RefCell<HashMap<PolyKey, (Polynomial, Interval)>> =
@@ -268,9 +284,9 @@ pub fn clear_caches() {
     INTEGRATE_CACHE.with(|c| c.borrow_mut().clear());
 }
 
-// ... (Le reste des implémentations TaylorModel, Add, Sub, Mul, Display, compose_tm, etc. reste strictement identique) ...
-// Je réintègre ici le reste pour que le fichier soit complet et compilable.
-
+// -----------------------------------------------------------------------------
+// TaylorModel
+// -----------------------------------------------------------------------------
 #[derive(Clone, Debug)]
 pub struct TaylorModel {
     pub polynomial: Polynomial,
@@ -288,6 +304,7 @@ impl TaylorModel {
             order,
         }
     }
+
     pub fn variable(
         variable: usize,
         coefficient: f64,
@@ -302,6 +319,7 @@ impl TaylorModel {
             order,
         }
     }
+
     pub fn from_interval(
         value: Interval,
         dimension: usize,
@@ -315,17 +333,25 @@ impl TaylorModel {
             order,
         }
     }
+
     pub fn range(&self) -> Interval {
         self.polynomial.evaluate(&self.domain) + self.remainder
     }
+
     pub fn polynomial_range(&self) -> Interval {
         self.polynomial.evaluate(&self.domain)
     }
+
+    /// Sparsifie avec le seuil passé ; si seuil infini ou négatif, ne fait rien.
     pub fn sparsify(mut self, threshold: f64) -> TaylorModel {
+        if threshold.is_infinite() || threshold <= 0.0 {
+            return self;
+        }
         let dropped = self.polynomial.sparsify(&self.domain, threshold);
         self.remainder = self.remainder + dropped;
         self
     }
+
     pub fn powi(&self, exponent: usize) -> TaylorModel {
         if exponent == 0 {
             return TaylorModel::constant(
@@ -341,9 +367,11 @@ impl TaylorModel {
         }
         result
     }
+
     pub fn sample(&self, point: &[f64]) -> f64 {
         self.polynomial.sample(point)
     }
+
     pub fn integrate_time(&self) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
         let key = PolyKey::from(&self.polynomial);
@@ -373,8 +401,9 @@ impl TaylorModel {
             domain: self.domain.clone(),
             order: self.order,
         };
-        result.sparsify(SPARSITY_THRESHOLD)
+        result.sparsify(get_sparsity_threshold()) // utilise le seuil courant
     }
+
     pub fn substitute_time(&self, t: f64) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
         let new_dim = time_var;
@@ -392,6 +421,7 @@ impl TaylorModel {
             order: self.order,
         }
     }
+
     pub fn extend_with_time(&self, h: f64) -> TaylorModel {
         let new_dim = self.polynomial.dimension + 1;
         let mut new_poly = Polynomial::new(new_dim, self.order);
@@ -422,7 +452,7 @@ impl Add for TaylorModel {
             domain: self.domain,
             order: self.order,
         };
-        result.sparsify(SPARSITY_THRESHOLD)
+        result.sparsify(get_sparsity_threshold())
     }
 }
 
@@ -437,7 +467,7 @@ impl Sub for TaylorModel {
             domain: self.domain,
             order: self.order,
         };
-        result.sparsify(SPARSITY_THRESHOLD)
+        result.sparsify(get_sparsity_threshold())
     }
 }
 
@@ -482,7 +512,7 @@ impl Mul for TaylorModel {
             domain: self.domain,
             order,
         };
-        result.sparsify(SPARSITY_THRESHOLD)
+        result.sparsify(get_sparsity_threshold())
     }
 }
 
@@ -556,6 +586,7 @@ impl TaylorModel {
     pub fn standard_domain(dim: usize) -> Vec<Interval> {
         (0..dim).map(|_| interval!(-1.0, 1.0).unwrap()).collect()
     }
+
     pub fn parameterized_initial_set(
         centers: &[f64],
         radii: &[f64],
