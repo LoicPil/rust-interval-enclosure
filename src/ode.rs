@@ -103,7 +103,7 @@ pub fn verify_remainder(
     max_iterations: usize,
 ) -> Option<Vec<TaylorModel>> {
     let dimension = polynomial.len();
-    let mut remainder = vec![interval!(0.0, 0.0).unwrap(); dimension];
+    let mut remainder: Vec<Interval> = polynomial.iter().map(|tm| tm.remainder).collect();
 
     for _ in 0..max_iterations {
         let enclosure: Vec<TaylorModel> = polynomial
