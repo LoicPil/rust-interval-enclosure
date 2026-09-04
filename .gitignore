@@ -1,3 +1,13 @@
 /target
 *.pdf
+/target
+*.pdf
+# Profiling / debug
+flamegraph.svg
+perf.data
+perf.data.old
+*.pdf
+*.svg
+*.png
+
 
