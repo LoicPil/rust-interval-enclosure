@@ -467,6 +467,7 @@ pub fn precondition(
     //         .collect::<Vec<_>>()
     // );
 
+
     let s: Vec<f64> = u_plus_f
         .iter()
         .map(|tm| {
