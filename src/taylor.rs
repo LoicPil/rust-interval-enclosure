@@ -18,8 +18,28 @@ pub fn get_sparsity_threshold() -> f64 {
     CURRENT_SPARSITY_THRESHOLD.with(|cell| *cell.borrow())
 }
 
+fn zero_iv() -> Interval {
+    interval!(0.0, 0.0).unwrap()
+}
+
+fn pt(x: f64) -> Interval {
+    interval!(x, x).unwrap()
+}
+
+/// Arrondit une valeur EXACTE (calculée en Interval) à un unique coefficient
+/// f64, et renvoie le résidu exact qu'il faut absorber ailleurs (dans le
+/// remainder du TaylorModel). Invariant garanti : exact ⊆ pt(point) + residual.
+#[inline]
+fn round_to_point(exact: Interval) -> (f64, Interval) {
+    let point = exact.mid();
+    (point, exact - pt(point))
+}
+
 // -----------------------------------------------------------------------------
-// Polynomial
+// Polynomial — coefficients f64 (rapide, comme demandé), mais toute
+// combinaison de deux coefficients passe par `round_to_point` : le calcul
+// exact se fait en Interval, seul le résultat stocké est un f64, et le
+// résidu de cet arrondi est renvoyé explicitement plutôt que deviné.
 // -----------------------------------------------------------------------------
 #[derive(Clone, Debug)]
 pub struct Polynomial {
@@ -69,7 +89,7 @@ impl Polynomial {
         assert_eq!(exponents.len(), self.dimension);
         assert!(
             value.is_finite(),
-            "non-finite coefficient {} at {:?}",
+            "coefficient non fini {} en {:?}",
             value,
             exponents
         );
@@ -100,12 +120,16 @@ impl Polynomial {
         exponents.iter().sum()
     }
 
+    /// Évaluation : toujours rigoureuse (Interval de bout en bout), que les
+    /// coefficients stockés soient exacts ou déjà arrondis — c'est le reste
+    /// (remainder) du TaylorModel appelant qui compense un éventuel arrondi
+    /// de coefficient, pas cette fonction.
     pub fn evaluate(&self, domain: &[Interval]) -> Interval {
         assert_eq!(domain.len(), self.dimension);
-        let mut result = interval!(0.0, 0.0).unwrap();
+        let mut result = zero_iv();
         for (&idx, &coefficient) in &self.coeffs {
             let exponents = self.decode(idx);
-            let mut term = interval!(coefficient, coefficient).unwrap();
+            let mut term = pt(coefficient);
             for (i, exponent) in exponents.iter().enumerate() {
                 if *exponent > 0 {
                     term *= domain[i].powi(*exponent as i32);
@@ -157,9 +181,8 @@ impl Polynomial {
     pub fn sparsify(&mut self, domain: &[Interval], threshold: f64) -> Interval {
         assert_eq!(domain.len(), self.dimension);
         if threshold.is_infinite() || threshold <= 0.0 {
-            return interval!(0.0, 0.0).unwrap();
+            return zero_iv();
         }
-
         let to_remove: Vec<usize> = self
             .coeffs
             .iter()
@@ -167,11 +190,11 @@ impl Polynomial {
             .map(|(&idx, _)| idx)
             .collect();
 
-        let mut dropped = interval!(0.0, 0.0).unwrap();
+        let mut dropped = zero_iv();
         for idx in to_remove {
             let coeff = self.coeffs.remove(&idx).unwrap();
             let exponents = self.decode(idx);
-            let mut term = interval!(coeff, coeff).unwrap();
+            let mut term = pt(coeff);
             for (i, &exponent) in exponents.iter().enumerate() {
                 if exponent > 0 {
                     term *= domain[i].powi(exponent as i32);
@@ -181,81 +204,117 @@ impl Polynomial {
         }
         dropped
     }
-}
 
-impl Add for Polynomial {
-    type Output = Polynomial;
-    fn add(mut self, other: Polynomial) -> Polynomial {
+    // -------------------------------------------------------------------
+    // Versions "checked" : mêmes opérations, mais renvoient en plus le
+    // résidu d'arrondi EXACT accumulé (jamais deviné) sur toutes les
+    // combinaisons de coefficients effectuées.
+    // -------------------------------------------------------------------
+
+    pub fn add_checked(mut self, other: Polynomial) -> (Polynomial, Interval) {
         assert_eq!(self.dimension, other.dimension);
         assert_eq!(self.degree, other.degree);
-        for (&idx, &coefficient) in other.coeffs.iter() {
+        let mut error = zero_iv();
+        for (&idx, &c2) in other.coeffs.iter() {
             let exponents = other.decode(idx);
-            let value = self.get(&exponents) + coefficient;
-            self.set(&exponents, value);
+            let c1 = self.get(&exponents);
+            let exact = pt(c1) + pt(c2);
+            let (point, residual) = round_to_point(exact);
+            error += residual;
+            self.set(&exponents, point);
         }
-        self
+        (self, error)
+    }
+
+    pub fn sub_checked(mut self, other: Polynomial) -> (Polynomial, Interval) {
+        assert_eq!(self.dimension, other.dimension);
+        assert_eq!(self.degree, other.degree);
+        let mut error = zero_iv();
+        for (&idx, &c2) in other.coeffs.iter() {
+            let exponents = other.decode(idx);
+            let c1 = self.get(&exponents);
+            let exact = pt(c1) - pt(c2);
+            let (point, residual) = round_to_point(exact);
+            error += residual;
+            self.set(&exponents, point);
+        }
+        (self, error)
+    }
+
+    /// Multiplication rigoureuse : accumulation EXACTE en Interval par
+    /// monôme de sortie (plusieurs paires (idx1,idx2) peuvent contribuer au
+    /// même monôme — l'accumulation en Interval reste correcte quel que
+    /// soit leur nombre), arrondi à un seul f64 par monôme seulement à la
+    /// toute fin.
+    pub fn mul_checked(&self, other: &Polynomial) -> (Polynomial, Interval) {
+        assert_eq!(self.dimension, other.dimension);
+        let degree = self.degree + other.degree;
+        let base_in = self.degree + 1;
+        let base_other = other.degree + 1;
+        let base_out = degree + 1;
+
+        let mut acc: HashMap<usize, Interval> = HashMap::new();
+
+        for (&idx1, &c1) in self.coeffs.iter() {
+            for (&idx2, &c2) in other.coeffs.iter() {
+                let mut new_idx = 0;
+                let mut pow = 1;
+                let mut a = idx1;
+                let mut b = idx2;
+                for _ in 0..self.dimension {
+                    let e1 = a % base_in;
+                    let e2 = b % base_other;
+                    new_idx += (e1 + e2) * pow;
+                    pow *= base_out;
+                    a /= base_in;
+                    b /= base_other;
+                }
+                let term = pt(c1) * pt(c2);
+                let current = acc.get(&new_idx).copied().unwrap_or_else(zero_iv);
+                acc.insert(new_idx, current + term);
+            }
+        }
+
+        let mut result = Polynomial::new(self.dimension, degree);
+        let mut error = zero_iv();
+        for (idx, exact) in acc {
+            let (point, residual) = round_to_point(exact);
+            error += residual;
+            if point != 0.0 {
+                result.coeffs.insert(idx, point);
+            }
+        }
+        (result, error)
+    }
+}
+
+// Versions "non checked" : gardées pour les usages hors TaylorModel (ex.
+// reconstruction de q_l dans `precondition`, où la rigueur vient d'ailleurs
+// — la QR elle-même est déjà une heuristique en float chez Bünger).
+impl Add for Polynomial {
+    type Output = Polynomial;
+    fn add(self, other: Polynomial) -> Polynomial {
+        self.add_checked(other).0
     }
 }
 
 impl Sub for Polynomial {
     type Output = Polynomial;
-    fn sub(mut self, other: Polynomial) -> Polynomial {
-        assert_eq!(self.dimension, other.dimension);
-        assert_eq!(self.degree, other.degree);
-        for (&idx, &coefficient) in other.coeffs.iter() {
-            let exponents = other.decode(idx);
-            let value = self.get(&exponents) - coefficient;
-            self.set(&exponents, value);
-        }
-        self
+    fn sub(self, other: Polynomial) -> Polynomial {
+        self.sub_checked(other).0
     }
 }
 
 impl Mul for Polynomial {
     type Output = Polynomial;
     fn mul(self, other: Polynomial) -> Polynomial {
-        assert_eq!(self.dimension, other.dimension);
-        let degree = self.degree + other.degree;
-        let mut result = Polynomial::new(self.dimension, degree);
-
-        let base_in = self.degree + 1;
-        let base_out = result.degree + 1;
-
-        fn combine_idx(
-            idx1: usize,
-            idx2: usize,
-            base_in: usize,
-            base_out: usize,
-            dim: usize,
-        ) -> usize {
-            let mut idx = 0;
-            let mut pow = 1;
-            let mut a = idx1;
-            let mut b = idx2;
-            for _ in 0..dim {
-                let e1 = a % base_in;
-                let e2 = b % base_in;
-                idx += (e1 + e2) * pow;
-                pow *= base_out;
-                a /= base_in;
-                b /= base_in;
-            }
-            idx
-        }
-
-        for (&idx1, &c1) in self.coeffs.iter() {
-            for (&idx2, &c2) in other.coeffs.iter() {
-                let new_idx = combine_idx(idx1, idx2, base_in, base_out, self.dimension);
-                let value = result.coeffs.get(&new_idx).unwrap_or(&0.0) + c1 * c2;
-                result.coeffs.insert(new_idx, value);
-            }
-        }
-        result
+        self.mul_checked(&other).0
     }
 }
 
 // -----------------------------------------------------------------------------
-// Caches
+// Caches — mémorisent maintenant aussi le résidu d'arrondi de l'opération
+// qu'ils remplacent, pour ne rien perdre en cas de hit.
 // -----------------------------------------------------------------------------
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PolyKey(Vec<(usize, u64)>);
@@ -273,9 +332,9 @@ impl PolyKey {
 }
 
 thread_local! {
-    static MUL_CACHE: RefCell<HashMap<(PolyKey, PolyKey), (Polynomial, Interval, Interval, Interval)>> =
+    static MUL_CACHE: RefCell<HashMap<(PolyKey, PolyKey), (Polynomial, Interval, Interval, Interval, Interval)>> =
         RefCell::new(HashMap::new());
-    static INTEGRATE_CACHE: RefCell<HashMap<PolyKey, (Polynomial, Interval)>> =
+    static INTEGRATE_CACHE: RefCell<HashMap<PolyKey, (Polynomial, Interval, Interval)>> =
         RefCell::new(HashMap::new());
 }
 
@@ -299,7 +358,7 @@ impl TaylorModel {
     pub fn constant(value: f64, dimension: usize, order: usize, domain: Vec<Interval>) -> Self {
         Self {
             polynomial: Polynomial::constant(dimension, order, value),
-            remainder: interval!(0.0, 0.0).unwrap(),
+            remainder: zero_iv(),
             domain,
             order,
         }
@@ -314,7 +373,7 @@ impl TaylorModel {
     ) -> Self {
         Self {
             polynomial: Polynomial::variable(dimension, order, variable, coefficient),
-            remainder: interval!(0.0, 0.0).unwrap(),
+            remainder: zero_iv(),
             domain,
             order,
         }
@@ -342,7 +401,6 @@ impl TaylorModel {
         self.polynomial.evaluate(&self.domain)
     }
 
-    /// Sparsifie avec le seuil passé ; si seuil infini ou négatif, ne fait rien.
     pub fn sparsify(mut self, threshold: f64) -> TaylorModel {
         if threshold.is_infinite() || threshold <= 0.0 {
             return self;
@@ -372,57 +430,106 @@ impl TaylorModel {
         self.polynomial.sample(point)
     }
 
+    /// Intègre en temps. L'antidérivée (division coeff/k, puis somme dans
+    /// antideriv) est calculée coefficient par coefficient EN Interval,
+    /// arrondie une seule fois par coefficient final — le résidu est plié
+    /// dans le remainder, pas deviné.
     pub fn integrate_time(&self) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
         let key = PolyKey::from(&self.polynomial);
-        let (r, s_range) = INTEGRATE_CACHE.with(|cache| {
+
+        let (r, s_range, round_err) = INTEGRATE_CACHE.with(|cache| {
             if let Some(cached) = cache.borrow().get(&key) {
                 return cached.clone();
             }
-            let mut antideriv = Polynomial::new(self.polynomial.dimension, self.order + 1);
+
+            // Accumulation exacte (Interval) par monôme de l'antidérivée.
+            let mut acc: HashMap<usize, Interval> = HashMap::new();
             for (exponents, coeff) in self.polynomial.terms() {
                 let mut new_exp = exponents.clone();
                 new_exp[time_var] += 1;
                 let k = new_exp[time_var] as f64;
-                let value = antideriv.get(&new_exp) + coeff / k;
-                antideriv.set(&new_exp, value);
+                let key_idx = {
+                    // encode new_exp comme index — réutilise Polynomial::index
+                    // via un polynôme temporaire de la bonne dimension/degré.
+                    let tmp = Polynomial::new(self.polynomial.dimension, self.order + 1);
+                    tmp.index_pub(&new_exp)
+                };
+                let term = pt(coeff) / pt(k);
+                let current = acc.get(&key_idx).copied().unwrap_or_else(zero_iv);
+                acc.insert(key_idx, current + term);
             }
+
+            let mut antideriv = Polynomial::new(self.polynomial.dimension, self.order + 1);
+            let mut round_err = zero_iv();
+            for (idx, exact) in acc {
+                let (point, residual) = round_to_point(exact);
+                round_err += residual;
+                if point != 0.0 {
+                    antideriv.coeffs.insert(idx, point);
+                }
+            }
+
             let (r, s) = antideriv.split(self.order);
             let s_range = s.evaluate(&self.domain);
-            let entry = (r, s_range);
+            let entry = (r, s_range, round_err);
             cache.borrow_mut().insert(key, entry.clone());
             entry
         });
+
         let time_range = self.domain[time_var];
-        let new_remainder = s_range + self.remainder * time_range;
+        let new_remainder = s_range + self.remainder * time_range + round_err;
+
         let result = TaylorModel {
             polynomial: r,
             remainder: new_remainder,
             domain: self.domain.clone(),
             order: self.order,
         };
-        result.sparsify(get_sparsity_threshold()) // utilise le seuil courant
+        result.sparsify(get_sparsity_threshold())
     }
 
+    /// Substitution t := valeur fixe. `t^k` est exact en Interval (`powi`),
+    /// mais `coeff * factor` et la somme dans new_poly ne le sont pas :
+    /// même traitement — accumulation exacte, arrondi une fois, résidu plié
+    /// dans le remainder du résultat.
     pub fn substitute_time(&self, t: f64) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
         let new_dim = time_var;
-        let mut new_poly = Polynomial::new(new_dim, self.order);
+        let t_iv = pt(t);
+
+        let mut acc: HashMap<usize, Interval> = HashMap::new();
         for (exponents, coeff) in self.polynomial.terms() {
-            let factor = t.powi(exponents[time_var] as i32);
+            let factor = t_iv.powi(exponents[time_var] as i32);
             let new_exp = exponents[..new_dim].to_vec();
-            let value = new_poly.get(&new_exp) + coeff * factor;
-            new_poly.set(&new_exp, value);
+            let tmp = Polynomial::new(new_dim, self.order);
+            let idx = tmp.index_pub(&new_exp);
+            let term = pt(coeff) * factor;
+            let current = acc.get(&idx).copied().unwrap_or_else(zero_iv);
+            acc.insert(idx, current + term);
         }
+
+        let mut new_poly = Polynomial::new(new_dim, self.order);
+        let mut round_err = zero_iv();
+        for (idx, exact) in acc {
+            let (point, residual) = round_to_point(exact);
+            round_err += residual;
+            if point != 0.0 {
+                new_poly.coeffs.insert(idx, point);
+            }
+        }
+
         TaylorModel {
             polynomial: new_poly,
-            remainder: self.remainder,
+            remainder: self.remainder + round_err,
             domain: self.domain[..new_dim].to_vec(),
             order: self.order,
         }
     }
 
     pub fn extend_with_time(&self, h: f64) -> TaylorModel {
+        // Pas de combinaison de coefficients ici (juste ajout d'une variable
+        // muette à exposant 0) : rien à suivre.
         let new_dim = self.polynomial.dimension + 1;
         let mut new_poly = Polynomial::new(new_dim, self.order);
         for (exponents, coeff) in self.polynomial.terms() {
@@ -446,9 +553,10 @@ impl Add for TaylorModel {
     fn add(self, other: TaylorModel) -> TaylorModel {
         assert_eq!(self.domain, other.domain);
         assert_eq!(self.order, other.order);
+        let (poly, round_err) = self.polynomial.add_checked(other.polynomial);
         let result = TaylorModel {
-            polynomial: self.polynomial + other.polynomial,
-            remainder: self.remainder + other.remainder,
+            polynomial: poly,
+            remainder: self.remainder + other.remainder + round_err,
             domain: self.domain,
             order: self.order,
         };
@@ -461,9 +569,10 @@ impl Sub for TaylorModel {
     fn sub(self, other: TaylorModel) -> TaylorModel {
         assert_eq!(self.domain, other.domain);
         assert_eq!(self.order, other.order);
+        let (poly, round_err) = self.polynomial.sub_checked(other.polynomial);
         let result = TaylorModel {
-            polynomial: self.polynomial - other.polynomial,
-            remainder: self.remainder - other.remainder,
+            polynomial: poly,
+            remainder: self.remainder - other.remainder + round_err,
             domain: self.domain,
             order: self.order,
         };
@@ -481,16 +590,17 @@ impl Mul for TaylorModel {
             PolyKey::from(&self.polynomial),
             PolyKey::from(&other.polynomial),
         );
-        let (low, high_range, p_range, q_range) = MUL_CACHE.with(|cache| {
+
+        let (low, high_range, p_range, q_range, round_err) = MUL_CACHE.with(|cache| {
             if let Some(cached) = cache.borrow().get(&key) {
                 return cached.clone();
             }
-            let product = self.polynomial.clone() * other.polynomial.clone();
+            let (product, round_err) = self.polynomial.mul_checked(&other.polynomial);
             let (low, high) = product.split(order);
             let high_range = high.evaluate(&self.domain);
             let p_range = self.polynomial.evaluate(&self.domain);
             let q_range = other.polynomial.evaluate(&self.domain);
-            let entry = (low, high_range, p_range, q_range);
+            let entry = (low, high_range, p_range, q_range, round_err);
             cache.borrow_mut().insert(key, entry.clone());
             entry
         });
@@ -501,14 +611,15 @@ impl Mul for TaylorModel {
             high_range + q_range * self.remainder + other.remainder * (p_range + self.remainder);
 
         let inter = g1.intersection(g2);
-        let error = if inter.is_empty() {
+        let base_error = if inter.is_empty() {
             g1.convex_hull(g2)
         } else {
             inter
         };
+
         let result = TaylorModel {
             polynomial: low,
-            remainder: error,
+            remainder: base_error + round_err,
             domain: self.domain,
             order,
         };
@@ -551,6 +662,12 @@ impl fmt::Display for TaylorModel {
 }
 
 impl Polynomial {
+    /// Rendu public de `index`, nécessaire pour construire des clés depuis
+    /// `integrate_time`/`substitute_time` sans dupliquer l'encodage.
+    pub fn index_pub(&self, exponents: &[usize]) -> usize {
+        self.index(exponents)
+    }
+
     pub fn compose_tm(&self, args: &[TaylorModel]) -> TaylorModel {
         assert_eq!(args.len(), self.dimension);
         let dim = args[0].polynomial.dimension;
