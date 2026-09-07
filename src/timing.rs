@@ -1,4 +1,4 @@
-/// Times any expression and prints "[timing] <label>: <elapsed>" to stdout,
+/// Times any expression and prints "\[timing\] <label>: <elapsed>" to stdout,
 /// then returns the expression's value unchanged — so it composes with `?`,
 /// assignment, anything.
 #[macro_export]

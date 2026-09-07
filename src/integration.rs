@@ -10,6 +10,8 @@ const TWELVE: Interval = const_interval!(12.0, 12.0);
 const TWENTY_FOUR: Interval = const_interval!(24.0, 24.0);
 const TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY: Interval = const_interval!(2880.0, 2880.0);
 
+/// Sums a slice of intervals pairwise (binary-tree fold) to reduce the
+/// worst-case rounding error compared to a left fold.
 fn pairwise_sum(intervals: &[Interval]) -> Interval {
     match intervals.len() {
         0 => ZERO,
@@ -21,7 +23,10 @@ fn pairwise_sum(intervals: &[Interval]) -> Interval {
     }
 }
 
-/// Computes a certified midpoint quadrature enclosure.
+/// Computes a certified enclosure of `∫_a^b f(x) dx` using the composite
+/// midpoint rule over `n` subintervals.
+///
+/// `f_pp` must be an interval extension of `f''`, used for the error term.
 pub fn midpoint_certified<F, FPP>(
     f: F,
     f_pp: FPP,
@@ -49,20 +54,24 @@ where
 
         let mid = (xi + xi1) / TWO;
 
+        // Midpoint approximation: h * f(mid)
         let point_value = f(mid) * h;
 
+        // Error bound: (h^3 / 24) * f''([xi, xi1])
         let sub = interval!(xi.inf(), xi1.sup())?;
-
         let coeff = h.powi(3) / TWENTY_FOUR;
         let error_term = f_pp(sub) * coeff;
 
         contributions.push(point_value + error_term);
     }
 
-    Ok(pairwise_sum(&contributions)) // pas possible pairwise_sum(&contributions)*h ? 
+    Ok(pairwise_sum(&contributions))
 }
 
-/// Computes a certified trapezoidal quadrature enclosure.
+/// Computes a certified enclosure of `∫_a^b f(x) dx` using the composite
+/// trapezoidal rule over `n` subintervals.
+///
+/// `f_pp` must be an interval extension of `f''`, used for the error term.
 pub fn trapezoidal_certified<F, FPP>(
     f: F,
     f_pp: FPP,
@@ -88,10 +97,11 @@ where
         let xi = if i == 0 { ia } else { ia + ii * h };
         let xi1 = if i + 1 == n { ib } else { ia + ii1 * h };
 
+        // Trapezoidal rule: (h/2)*(f(xi) + f(xi1))
         let point_value = (h / TWO) * (f(xi) + f(xi1));
 
+        // Error bound: -(h^3 / 12) * f''([xi, xi1])
         let sub = interval!(xi.inf(), xi1.sup())?;
-
         let coeff = h.powi(3) / TWELVE;
         let error_term = f_pp(sub) * coeff;
 
@@ -101,7 +111,10 @@ where
     Ok(pairwise_sum(&contributions))
 }
 
-/// Computes a certified Simpson quadrature enclosure.
+/// Computes a certified enclosure of `∫_a^b f(x) dx` using the composite
+/// Simpson rule over `n` subintervals.
+///
+/// `f_4` must be an interval extension of `f''''`, used for the error term.
 pub fn simpson_certified<F, F4>(
     f: F,
     f_4: F4,
@@ -129,10 +142,11 @@ where
 
         let mid = (xi + xi1) / TWO;
 
+        // Simpson's rule: (h/6)*(f(xi) + 4*f(mid) + f(xi1))
         let point_value = (h / SIX) * (f(xi) + FOUR * f(mid) + f(xi1));
 
+        // Error bound: -(h^5 / 2880) * f''''([xi, xi1])
         let sub = interval!(xi.inf(), xi1.sup())?;
-
         let coeff = h.powi(5) / TWO_THOUSAND_EIGHT_HUNDRED_EIGHTY;
         let error_term = f_4(sub) * coeff;
 
@@ -142,18 +156,30 @@ where
     Ok(pairwise_sum(&contributions))
 }
 
-/// Defines a Gaussian quadrature rule.
+/// A Gaussian quadrature rule on the reference interval `[-1, 1]`.
+///
+/// Implementors must provide the nodes and weights on the reference interval `[-1, 1]`,
+/// as well as the constant `C_n = ∫ [π_n(x)]^2 dx` needed for the error bound.
 pub trait GaussianRule {
+    /// Order of the rule (number of nodes).
     fn order(&self) -> usize;
 
+    /// Nodes on the reference interval `[-1, 1]`.
     fn nodes(&self) -> &[f64];
 
+    /// Weights on the reference interval `[-1, 1]`.
     fn weights(&self) -> &[f64];
 
+    /// Computes the constant `C_n` for the error term on the interval `[a, b]`.
+    ///
+    /// `C_n = ∫_a^b [π_n^[a,b](x)]^2 dx`, where `π_n` is the monic orthogonal polynomial
+    /// transformed to `[a, b]`.
     fn c_n(&self, a: Interval, b: Interval) -> Interval;
 
     /// Transports the rule from `[-1, 1]` to `[a, b]`.
-    /// laisser les poids sur -1 1 et juste multiplier a  la fin par la taille
+    ///
+    /// The nodes and weights are returned as intervals to account for rounding errors.
+    /// The scaling is: nodes = (b-a)/2 * s + (a+b)/2, weights = (b-a)/2 * w.
     fn transported(
         &self,
         a: Interval,
@@ -166,6 +192,7 @@ pub trait GaussianRule {
             .nodes()
             .iter()
             .map(|&s| {
+                // Enclose the floating-point node in a tiny interval to capture rounding.
                 let s = interval!(s.next_down(), s.next_up()).unwrap();
                 mid + half * s
             })
@@ -181,7 +208,10 @@ pub trait GaussianRule {
     }
 }
 
-/// Computes a certified Gaussian quadrature enclosure.
+/// Computes a certified enclosure of `∫_a^b f(x) dx` using a composite
+/// `n`-point Gaussian rule (`rule` applied on each of `n` subintervals).
+///
+/// `f_2n` must be an interval extension of `f^(2*order)`, used for the error term.
 pub fn gaussian_certified<R, F, F2N>(
     rule: &R,
     f: F,
@@ -202,6 +232,7 @@ where
     let h = (b - a) / i_n;
     let two_n = 2 * rule.order();
 
+    // Exact factorial constant for the error term: (2n)! (as an interval)
     let fact_2n = factorial_interval(two_n)?;
 
     let mut contributions = Vec::with_capacity(n as usize);
@@ -213,23 +244,24 @@ where
         let xi = if i == 0 { a } else { a + ii * h };
         let xi1 = if i + 1 == n { b } else { a + ii1 * h };
 
+        // Transport the rule to the subinterval [xi, xi1]
         let (nodes, weights) = rule.transported(xi, xi1)?;
 
+        // Compute the Gaussian quadrature sum: Σ w_j * f(x_j)
         let mut point_terms = Vec::with_capacity(nodes.len());
-
         for (&x, &w) in nodes.iter().zip(weights.iter()) {
             point_terms.push(w * f(x));
         }
 
+        // `transported` returns the reference weights unscaled, so the sum still
+        // needs the Jacobian factor (xi1 - xi) / 2 of the change of variables.
         let sub_half = (xi1 - xi) / TWO;
-
         let point_value = pairwise_sum(&point_terms) * sub_half;
 
+        // Error bound: (C_n / (2n)!) * f^(2n)([xi, xi1])
         let sub = interval!(xi.inf(), xi1.sup())?;
-
         let c_n = rule.c_n(xi, xi1);
         let coeff = c_n / fact_2n;
-
         let derivative = f_2n(sub);
         let error_term = derivative * coeff;
 
@@ -239,7 +271,10 @@ where
     Ok(pairwise_sum(&contributions))
 }
 
-/// Stores a Gauss-Legendre quadrature rule.
+/// A Gauss-Legendre quadrature rule on `[-1, 1]`.
+///
+/// Nodes and weights come from [DLMF](https://dlmf.nist.gov/3.5#v) for orders
+/// 5, 10, 20, and from the Golub-Welsch algorithm otherwise.
 pub struct GaussLegendreRule {
     order: usize,
     nodes: Vec<f64>,
@@ -247,10 +282,10 @@ pub struct GaussLegendreRule {
 }
 
 impl GaussLegendreRule {
-    /// Constructs a Gauss-Legendre rule.
+    /// Constructs a new Gauss-Legendre rule of the given order.
     ///
-    /// DLMF values are used for orders 5, 10 and 20.
-    /// Other orders are computed using the Golub-Welsch algorithm.
+    /// # Panics
+    /// Panics if `order < 1`.
     pub fn new(order: usize) -> Self {
         assert!(order >= 1);
 
@@ -262,11 +297,17 @@ impl GaussLegendreRule {
         }
     }
 
+    /// Computes the rule via the Golub-Welsch algorithm.
+    ///
+    /// The Jacobi matrix is formed from the recurrence coefficients of the Legendre
+    /// polynomials: α_k = 0, β_k = k^2/(4k^2 - 1). The eigenvalues give the nodes,
+    /// and the first component of the eigenvectors give the weights.
     fn from_golub_welsch(order: usize) -> Self {
         let beta0 = 2.0;
 
         let mut jacobi = DMatrix::<f64>::zeros(order, order);
 
+        // Fill the off-diagonals with sqrt(β_k)
         for k in 1..order {
             let kf = k as f64;
             let beta_k = kf.powi(2) / (4.0 * kf.powi(2) - 1.0);
@@ -278,15 +319,16 @@ impl GaussLegendreRule {
 
         let eig = SymmetricEigen::new(jacobi);
 
+        // Collect (node, weight) pairs: weight = β0 * v0^2
         let mut pairs: Vec<(f64, f64)> = (0..order)
             .map(|i| {
                 let node = eig.eigenvalues[i];
                 let v0 = eig.eigenvectors[(0, i)];
-
                 (node, beta0 * v0 * v0)
             })
             .collect();
 
+        // Sort by nodes (increasing)
         pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
         Self {
@@ -296,6 +338,7 @@ impl GaussLegendreRule {
         }
     }
 
+    /// Returns the rule for orders 5, 10, 20 using DLMF values.
     fn from_dlmf(order: usize) -> Self {
         let (nodes, weights): (&[f64], &[f64]) = match order {
             5 => (
@@ -410,29 +453,32 @@ impl GaussianRule for GaussLegendreRule {
         &self.weights
     }
 
+    /// Computes `C_n` for the Legendre measure on `[a, b]`.
+    ///
+    /// For the monic Legendre polynomial of degree `n`:
+    ///   C_n = ((b-a)/2)^(2n+1) * 2/(2n+1) * (2^n * n!^2 / (2n)!)^2
     fn c_n(&self, a: Interval, b: Interval) -> Interval {
         let n = self.order;
 
         let half = (b - a) / TWO;
 
         let fact_n = factorial_interval(n).unwrap();
-
         let fact_2n = factorial_interval(2 * n).unwrap();
-
         let two_pow_n = TWO.powi(n as i32);
 
+        // k_n_inv = (2^n * n!^2) / (2n)!
         let k_n_inv = two_pow_n * fact_n * fact_n / fact_2n;
 
         let exponent = (2 * n + 1) as i32;
+        let denom = interval!((2 * n + 1) as f64, (2 * n + 1) as f64).unwrap();
 
-        half.powi(exponent)
-            * (TWO / interval!((2 * n + 1) as f64, (2 * n + 1) as f64).unwrap())
-            * k_n_inv
-            * k_n_inv
+        half.powi(exponent) * (TWO / denom) * k_n_inv * k_n_inv
     }
 }
 
-/// Computes a certified Gauss-Legendre quadrature enclosure.
+/// Convenience function to compute certified Gauss-Legendre quadrature.
+///
+/// This is a wrapper around `gaussian_certified` with a `GaussLegendreRule`.
 pub fn gauss_legendre_certified<F, F2N>(
     rule: &GaussLegendreRule,
     f: F,
@@ -450,15 +496,15 @@ where
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use crate::hausdorff_nested;
     use std::f64::consts::PI;
 
+    // Gauss-Legendre tests
+
     #[test]
     fn test_constant() {
         let rule = GaussLegendreRule::new(5);
-
         let result = gauss_legendre_certified(
             &rule,
             |_| interval!(1.0, 1.0).unwrap(),
@@ -468,22 +514,15 @@ mod tests {
             1,
         )
         .unwrap();
-
-        println!("result = {}", result);
-
         assert!(result.contains(1.0));
     }
 
     #[test]
     fn test_linear() {
         let rule = GaussLegendreRule::new(5);
-
         let result =
             gauss_legendre_certified(&rule, |x| x, |_| interval!(0.0, 0.0).unwrap(), 0.0, 1.0, 1)
                 .unwrap();
-
-        println!("result = {}", result);
-
         assert!(result.contains(0.5));
         assert!(result.wid() <= 5e-16);
     }
@@ -491,7 +530,6 @@ mod tests {
     #[test]
     fn test_quadratic() {
         let rule = GaussLegendreRule::new(5);
-
         let result = gauss_legendre_certified(
             &rule,
             |x| x.sqr(),
@@ -501,14 +539,12 @@ mod tests {
             1,
         )
         .unwrap();
-
         assert!(result.contains(1.0 / 3.0));
     }
 
     #[test]
     fn test_cubic() {
         let rule = GaussLegendreRule::new(5);
-
         let result = gauss_legendre_certified(
             &rule,
             |x| x.powi(3),
@@ -518,14 +554,12 @@ mod tests {
             1,
         )
         .unwrap();
-
         assert!(result.contains(1.0 / 4.0));
     }
 
     #[test]
     fn test_x5() {
         let rule = GaussLegendreRule::new(5);
-
         let result = gauss_legendre_certified(
             &rule,
             |x| x.powi(5),
@@ -535,16 +569,12 @@ mod tests {
             1,
         )
         .unwrap();
-
-        println!("result = {}", result);
-
         assert!(result.contains(1.0 / 6.0));
     }
 
     #[test]
     fn test_x6() {
         let rule = GaussLegendreRule::new(5);
-
         let result = gauss_legendre_certified(
             &rule,
             |x| x.powi(6),
@@ -554,16 +584,12 @@ mod tests {
             1,
         )
         .unwrap();
-
-        println!("result = {}", result);
-
         assert!(result.contains(1.0 / 7.0));
     }
 
     #[test]
     fn test_x10() {
         let rule = GaussLegendreRule::new(5);
-
         let result = gauss_legendre_certified(
             &rule,
             |x| x.powi(10),
@@ -573,29 +599,22 @@ mod tests {
             1,
         )
         .unwrap();
-
-        println!("result = {}", result);
-
         assert!(result.contains(1.0 / 11.0));
     }
 
     #[test]
     fn test_exponential() {
         let rule = GaussLegendreRule::new(5);
-
         let result =
             gauss_legendre_certified(&rule, |x| x.exp(), |x| x.exp(), 0.0, 1.0, 1).unwrap();
-
         assert!(result.contains(std::f64::consts::E - 1.0));
     }
 
     #[test]
     fn test_sine() {
         let rule = GaussLegendreRule::new(5);
-
         let result =
             gauss_legendre_certified(&rule, |x| x.sin(), |x| -x.sin(), 0.0, PI, 1).unwrap();
-
         assert!(result.contains(2.0));
     }
 
@@ -607,7 +626,6 @@ mod tests {
         let (nodes, weights) = rule.transported(a, b).unwrap();
 
         let half = (b - a) / TWO;
-
         let result = half
             * pairwise_sum(
                 &nodes
@@ -617,9 +635,10 @@ mod tests {
                     .collect::<Vec<_>>(),
             );
 
-        println!("result = {}", result);
         assert!(result.contains(1.0 / 6.0));
     }
+
+    // Midpoint, trapezoidal, Simpson tests
 
     #[test]
     fn test_midpoint_constant() {
@@ -638,7 +657,6 @@ mod tests {
     fn test_midpoint_quadratic() {
         let result =
             midpoint_certified(|x| x * x, |_| interval!(2.0, 2.0).unwrap(), 0.0, 1.0, 10).unwrap();
-
         assert!(result.contains(1.0 / 3.0));
     }
 
@@ -652,7 +670,6 @@ mod tests {
             10,
         )
         .unwrap();
-
         assert!(result.contains(1.0));
     }
 
@@ -661,7 +678,6 @@ mod tests {
         let result =
             trapezoidal_certified(|x| x * x, |_| interval!(2.0, 2.0).unwrap(), 0.0, 1.0, 10)
                 .unwrap();
-
         assert!(result.contains(1.0 / 3.0));
     }
 
@@ -675,7 +691,6 @@ mod tests {
             10,
         )
         .unwrap();
-
         assert!(result.contains(1.0));
     }
 
@@ -689,9 +704,11 @@ mod tests {
             10,
         )
         .unwrap();
-
         assert!(result.contains(1.0 / 5.0));
     }
+
+    // Golub-Welsch vs DLMF validation
+
     #[test]
     fn test_golub_welsch_nodes_within_1ulp_of_dlmf() {
         for &order in &[5usize, 10, 20] {
@@ -755,6 +772,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn test_golub_welsch_encloses_exact_value() {
         for &order in &[5usize, 10, 20] {

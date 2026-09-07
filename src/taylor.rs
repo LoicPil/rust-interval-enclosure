@@ -4,10 +4,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
 
-// ============================================================================
-// Sparsity Configuration
-// ============================================================================
-
 /// Default threshold for coefficient sparsification.
 pub const SPARSITY_THRESHOLD: f64 = 1e-16;
 
@@ -45,10 +41,6 @@ fn round_to_point(exact: Interval) -> (f64, Interval) {
     let point = exact.mid();
     (point, exact - pt(point))
 }
-
-// ============================================================================
-// Polynomial
-// ============================================================================
 
 /// A multivariate polynomial with f64 coefficients.
 ///
@@ -229,10 +221,6 @@ impl Polynomial {
         dropped
     }
 
-    // ------------------------------------------------------------------------
-    // Checked operations with explicit rounding error tracking
-    // ------------------------------------------------------------------------
-
     /// Addition with exact rounding error tracking.
     pub fn add_checked(mut self, other: Polynomial) -> (Polynomial, Interval) {
         assert_eq!(self.dimension, other.dimension);
@@ -313,10 +301,6 @@ impl Polynomial {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Operator implementations for Polynomial (unchecked)
-// ----------------------------------------------------------------------------
-
 impl Add for Polynomial {
     type Output = Polynomial;
     fn add(self, other: Polynomial) -> Polynomial {
@@ -337,10 +321,6 @@ impl Mul for Polynomial {
         self.mul_checked(&other).0
     }
 }
-
-// ============================================================================
-// Caches
-// ============================================================================
 
 /// Key for polynomial caching based on coefficients.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -373,10 +353,6 @@ pub fn clear_caches() {
     MUL_CACHE.with(|c| c.borrow_mut().clear());
     INTEGRATE_CACHE.with(|c| c.borrow_mut().clear());
 }
-
-// ============================================================================
-// TaylorModel
-// ============================================================================
 
 /// A Taylor model consisting of a polynomial part and a remainder interval.
 #[derive(Clone, Debug)]
@@ -583,10 +559,6 @@ impl TaylorModel {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Operator implementations for TaylorModel
-// ----------------------------------------------------------------------------
-
 impl Add for TaylorModel {
     type Output = TaylorModel;
     fn add(self, other: TaylorModel) -> TaylorModel {
@@ -667,10 +639,6 @@ impl Mul for TaylorModel {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Display implementation
-// ----------------------------------------------------------------------------
-
 impl fmt::Display for TaylorModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names = ["x", "y", "z", "t"];
@@ -704,10 +672,6 @@ impl fmt::Display for TaylorModel {
         write!(f, " + E, E = {}", self.remainder)
     }
 }
-
-// ============================================================================
-// Composition utilities
-// ============================================================================
 
 impl Polynomial {
     /// Public version of `index` for use in other modules.
@@ -748,10 +712,6 @@ pub fn compose(left: &[TaylorModel], right: &[TaylorModel]) -> Vec<TaylorModel> 
         })
         .collect()
 }
-
-// ============================================================================
-// Utility constructors
-// ============================================================================
 
 impl TaylorModel {
     /// Creates a standard domain [-1, 1]^dim.

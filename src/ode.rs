@@ -604,10 +604,6 @@ pub fn solve(
     }
 }
 
-// -----------------------------------------------------------------------------
-// Plotting utilities
-// -----------------------------------------------------------------------------
-
 /// Plots a single component of the solution with interval bounds.
 pub fn plot_component(
     result: &[(f64, Vec<Interval>)],
