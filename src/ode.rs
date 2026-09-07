@@ -4,6 +4,7 @@ use matplotlib::pyplot::subplots;
 
 pub type OdeFunction = fn(Vec<TaylorModel>) -> Vec<TaylorModel>;
 
+/// Configuration options for the Bünger integration method.
 #[derive(Clone, Debug)]
 pub struct BungerOptions {
     pub order: usize,
@@ -29,7 +30,7 @@ impl Default for BungerOptions {
     }
 }
 
-/// K(y) = y0 + ∫_{t0}^{t} f(y) dt, evaluated in Taylor model arithmetic.
+/// Performs one Picard iteration step: K(y) = y₀ + ∫ f(y) dt.
 pub fn picard_step(
     initial: &[TaylorModel],
     current: &[TaylorModel],
@@ -47,8 +48,7 @@ pub fn picard_step(
         .collect()
 }
 
-/// p^(0) = q,  p^(i+1) = K(p^(i)); after `iterations` steps the polynomial
-/// part is the order-`iterations` Taylor polynomial of the flow.
+/// Computes the order-N Taylor polynomial of the flow via Picard iteration.
 pub fn picard_iteration(initial: Vec<TaylorModel>, f: OdeFunction) -> Vec<TaylorModel> {
     let iterations = initial[0].order;
     let mut current = initial.clone();
@@ -58,13 +58,14 @@ pub fn picard_iteration(initial: Vec<TaylorModel>, f: OdeFunction) -> Vec<Taylor
     current
 }
 
-/// E_(i+1) = [1-eps, 1+eps] * E'_i + [-delta, delta].
+/// Inflates a remainder interval using the epsilon-delta method.
 pub fn inflate_remainder(remainder: Interval, epsilon: f64, delta: f64) -> Interval {
     let factor = interval!(1.0 - epsilon, 1.0 + epsilon).expect("invalid inflation factor");
     let delta_interval = interval!(-delta, delta).expect("invalid delta");
     factor * remainder + delta_interval
 }
 
+/// Replaces the remainder of a Taylor model with a new interval.
 pub fn with_remainder(tm: &TaylorModel, remainder: Interval) -> TaylorModel {
     TaylorModel {
         polynomial: tm.polynomial.clone(),
@@ -74,17 +75,19 @@ pub fn with_remainder(tm: &TaylorModel, remainder: Interval) -> TaylorModel {
     }
 }
 
+/// Checks if interval a is a subset of interval b.
 pub fn interval_subset(a: Interval, b: Interval) -> bool {
     b.inf() <= a.inf() && a.sup() <= b.sup()
 }
 
-/// p+E ⊆ p+F for identical polynomial parts iff E ⊆ F.
+/// Verifies that the image remainder is contained in the enclosure remainder.
 pub fn remainder_subset(image: &TaylorModel, enclosure: &TaylorModel) -> bool {
     let drift = (image.polynomial.clone() - enclosure.polynomial.clone()).evaluate(&image.domain);
     let effective = image.remainder + drift;
     interval_subset(effective, enclosure.remainder)
 }
 
+/// Checks component-wise containment of two vector of Taylor models.
 pub fn vector_subset(image: &[TaylorModel], enclosure: &[TaylorModel]) -> bool {
     assert_eq!(image.len(), enclosure.len());
     image
@@ -93,7 +96,7 @@ pub fn vector_subset(image: &[TaylorModel], enclosure: &[TaylorModel]) -> bool {
         .all(|(im, en)| remainder_subset(im, en))
 }
 
-/// Find a remainder E with K(p+E) ⊆ p+E, given the fixed polynomial `p`.
+/// Finds a remainder E such that K(p + E) ⊆ p + E for a fixed polynomial p.
 pub fn verify_remainder(
     polynomial: &[TaylorModel],
     initial: &[TaylorModel],
@@ -126,7 +129,7 @@ pub fn verify_remainder(
     None
 }
 
-/// One full integration step: Picard iteration for p, then ε-inflation for E.
+/// Performs one complete integration step (Picard iteration + remainder verification).
 pub fn bunger_step(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
@@ -134,13 +137,13 @@ pub fn bunger_step(
 ) -> Option<Vec<TaylorModel>> {
     crate::taylor::clear_caches();
 
-    // Désactiver la sparsification pendant la Picard iteration (seuil infini)
+    // Disable sparsification during Picard iteration
     let old_threshold = crate::taylor::get_sparsity_threshold();
     crate::taylor::set_sparsity_threshold(f64::INFINITY);
 
     let polynomial = picard_iteration(initial.clone(), f);
 
-    // Restaurer le seuil pour l'inflation
+    // Restore threshold for inflation
     crate::taylor::set_sparsity_threshold(old_threshold);
 
     verify_remainder(
@@ -153,16 +156,17 @@ pub fn bunger_step(
     )
 }
 
+/// Extracts the range (interval) from each Taylor model in a vector.
 pub fn ranges(state: &[TaylorModel]) -> Vec<Interval> {
     state.iter().map(|tm| tm.range()).collect()
 }
 
-/// q(x) := p(x, h),  J := E — the initial set for the next integration step.
-/// Dimension drops by one (time is fixed); re-lifted to n+1 dims by the caller.
+/// Evaluates Taylor models at a fixed time h (endpoint of the step).
 pub fn endpoint(state: &[TaylorModel], h: f64) -> Vec<TaylorModel> {
     state.iter().map(|tm| tm.substitute_time(h)).collect()
 }
 
+/// Core solver without preconditioning.
 pub fn solve_bunger(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
@@ -192,10 +196,7 @@ pub fn solve_bunger(
     Ok(result)
 }
 
-/// Thin wrapper around solve_bunger doing the initial dimension-lift
-/// (Bünger Step 1 -> Step 2): the caller builds a time-independent q+J
-/// in dimension n, this lifts it to n+1 with a fresh time domain [0, h]
-/// before handing it to the main solver.
+/// Lifts n-dimensional initial data to (n+1)-dimensional for time-dependent integration.
 pub fn solve_ode(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
@@ -211,7 +212,9 @@ pub fn solve_ode(
     solve_bunger(lifted, f, t0, n_steps, options)
 }
 
+/// Linear algebra utilities for matrix operations.
 pub mod linalg {
+    /// Computes the inverse of a matrix with a floor for small pivots.
     pub fn invert(a: &[Vec<f64>], floor: f64) -> Vec<Vec<f64>> {
         let n = a.len();
         let mut m: Vec<Vec<f64>> = a.to_vec();
@@ -251,7 +254,7 @@ pub mod linalg {
         inv
     }
 
-    /// Smallest pivot seen during elimination — cheap proxy for near-singularity.
+    /// Returns the smallest pivot magnitude encountered during elimination.
     pub fn smallest_pivot_magnitude(a: &[Vec<f64>]) -> f64 {
         let n = a.len();
         let mut m: Vec<Vec<f64>> = a.to_vec();
@@ -276,7 +279,7 @@ pub mod linalg {
         min_pivot
     }
 
-    /// Permuted QR factorization A·P = Q·R̃, R := R̃·Pᵀ (Lohner's method, §3.3).
+    /// Computes pivoted QR factorization A·P = Q·R̃, where R = R̃·Pᵀ.
     pub fn qr_pivoted(a: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
         let n = a.len();
         let cols: Vec<Vec<f64>> = (0..n).map(|j| (0..n).map(|i| a[i][j]).collect()).collect();
@@ -337,8 +340,7 @@ pub mod linalg {
     }
 }
 
-/// Splits space-only TMs p(x) into (A, b(x), c): linear coefficients,
-/// nonlinear remainder polynomial, and constant term.
+/// Decomposes Taylor models into linear, nonlinear, and constant parts.
 fn linear_decompose(p: &[TaylorModel]) -> (Vec<Vec<f64>>, Vec<TaylorModel>, Vec<f64>) {
     let n = p.len();
     let dim = p[0].polynomial.dimension;
@@ -372,12 +374,13 @@ fn linear_decompose(p: &[TaylorModel]) -> (Vec<Vec<f64>>, Vec<TaylorModel>, Vec<
     (a, b, c)
 }
 
+/// Result of preconditioning: transformed left and right factors.
 pub struct Preconditioned {
     pub q_l: Vec<TaylorModel>,
     pub q_r: Vec<TaylorModel>,
 }
 
-/// Parallelepiped preconditioning (Q:=A, R:=I) with blunting guarding the inverse.
+/// Applies parallelepiped preconditioning with optional blunting.
 pub fn precondition(
     p_star_l: &[TaylorModel],
     q_r: &[TaylorModel],
@@ -390,6 +393,7 @@ pub fn precondition(
 
     let (a, b, c) = linear_decompose(p_star_l);
 
+    // Apply blunting if tau is provided and the matrix is nearly singular
     let a_used = match blunt_tau {
         Some(tau) => {
             let min_pivot = linalg::smallest_pivot_magnitude(&a);
@@ -421,6 +425,7 @@ pub fn precondition(
         .map(|i| {
             let mut acc = TaylorModel::constant(0.0, dim, order, domain.clone());
 
+            // Add R·q_r terms
             for j in 0..n {
                 if r_mat[i][j] != 0.0 {
                     let mut poly = q_r[j].polynomial.clone();
@@ -437,6 +442,7 @@ pub fn precondition(
                 }
             }
 
+            // Add Qᵀ·composed terms
             for j in 0..n {
                 if q_t[i][j] != 0.0 {
                     let mut poly = composed[j].polynomial.clone();
@@ -456,6 +462,7 @@ pub fn precondition(
         })
         .collect();
 
+    // Diagnostic output for preconditioning
     eprintln!(
         "m = {:?}",
         u_plus_f
@@ -467,6 +474,7 @@ pub fn precondition(
             .collect::<Vec<_>>()
     );
 
+    // Compute scaling factors
     let s: Vec<f64> = u_plus_f
         .iter()
         .map(|tm| {
@@ -477,6 +485,7 @@ pub fn precondition(
         .collect();
     eprintln!("s = {:?}", s);
 
+    // Scale the right factor
     let q_r_new: Vec<TaylorModel> = u_plus_f
         .iter()
         .zip(s.iter())
@@ -494,6 +503,7 @@ pub fn precondition(
         })
         .collect();
 
+    // Build the new left factor
     let q_l_new: Vec<TaylorModel> = (0..n)
         .map(|i| {
             let mut poly = crate::taylor::Polynomial::constant(dim, order, c[i]);
@@ -518,7 +528,7 @@ pub fn precondition(
     }
 }
 
-/// Preconditioned solver.
+/// Solver with preconditioning enabled.
 pub fn solve_bunger_preconditioned(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
@@ -571,7 +581,7 @@ pub fn solve_bunger_preconditioned(
     Ok(result)
 }
 
-/// Single entry point.
+/// Main entry point: solves an ODE using the Bünger method.
 pub fn solve(
     initial: Vec<TaylorModel>,
     f: OdeFunction,
@@ -594,9 +604,11 @@ pub fn solve(
     }
 }
 
-// ------------------------------------------------------------
-// Plotting functions (unchanged)
-// ------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Plotting utilities
+// -----------------------------------------------------------------------------
+
+/// Plots a single component of the solution with interval bounds.
 pub fn plot_component(
     result: &[(f64, Vec<Interval>)],
     component: usize,
@@ -623,6 +635,7 @@ pub fn plot_component(
     Ok(())
 }
 
+/// Plots all components of the solution with interval bounds.
 pub fn plot_solution(
     result: &[(f64, Vec<Interval>)],
     title: &str,
@@ -654,6 +667,7 @@ pub fn plot_solution(
     Ok(())
 }
 
+/// Converts a scalar to an interval [x, x].
 fn scalar(x: f64) -> Interval {
     interval!(x, x).unwrap()
 }

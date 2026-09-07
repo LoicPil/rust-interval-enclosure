@@ -4,43 +4,57 @@ use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
 
+// ============================================================================
+// Sparsity Configuration
+// ============================================================================
+
+/// Default threshold for coefficient sparsification.
 pub const SPARSITY_THRESHOLD: f64 = 1e-16;
 
+/// Thread-local sparsity threshold.
 thread_local! {
     static CURRENT_SPARSITY_THRESHOLD: RefCell<f64> = RefCell::new(SPARSITY_THRESHOLD);
 }
 
+/// Sets the global sparsity threshold.
 pub fn set_sparsity_threshold(threshold: f64) {
     CURRENT_SPARSITY_THRESHOLD.with(|cell| *cell.borrow_mut() = threshold);
 }
 
+/// Gets the current sparsity threshold.
 pub fn get_sparsity_threshold() -> f64 {
     CURRENT_SPARSITY_THRESHOLD.with(|cell| *cell.borrow())
 }
 
+/// Returns the zero interval [0, 0].
 fn zero_iv() -> Interval {
     interval!(0.0, 0.0).unwrap()
 }
 
+/// Converts a scalar to a point interval [x, x].
 fn pt(x: f64) -> Interval {
     interval!(x, x).unwrap()
 }
 
-/// Arrondit une valeur EXACTE (calculée en Interval) à un unique coefficient
-/// f64, et renvoie le résidu exact qu'il faut absorber ailleurs (dans le
-/// remainder du TaylorModel). Invariant garanti : exact ⊆ pt(point) + residual.
+/// Rounds an exact interval to a single f64 point and returns the residual.
+///
+/// # Invariant
+/// `exact ⊆ pt(point) + residual`
 #[inline]
 fn round_to_point(exact: Interval) -> (f64, Interval) {
     let point = exact.mid();
     (point, exact - pt(point))
 }
 
-// -----------------------------------------------------------------------------
-// Polynomial — coefficients f64 (rapide, comme demandé), mais toute
-// combinaison de deux coefficients passe par `round_to_point` : le calcul
-// exact se fait en Interval, seul le résultat stocké est un f64, et le
-// résidu de cet arrondi est renvoyé explicitement plutôt que deviné.
-// -----------------------------------------------------------------------------
+// ============================================================================
+// Polynomial
+// ============================================================================
+
+/// A multivariate polynomial with f64 coefficients.
+///
+/// Coefficients are stored sparsely in a hash map. Operations are performed
+/// exactly using interval arithmetic, then rounded to f64 with residuals
+/// tracked explicitly.
 #[derive(Clone, Debug)]
 pub struct Polynomial {
     coeffs: HashMap<usize, f64>,
@@ -49,6 +63,7 @@ pub struct Polynomial {
 }
 
 impl Polynomial {
+    /// Creates a new zero polynomial with given dimension and degree.
     pub fn new(dimension: usize, degree: usize) -> Self {
         Self {
             coeffs: HashMap::new(),
@@ -57,6 +72,7 @@ impl Polynomial {
         }
     }
 
+    /// Encodes exponents into a unique index.
     #[inline]
     fn index(&self, exponents: &[usize]) -> usize {
         let base = self.degree + 1;
@@ -69,6 +85,7 @@ impl Polynomial {
         idx
     }
 
+    /// Decodes an index back to exponents.
     fn decode(&self, mut idx: usize) -> Vec<usize> {
         let base = self.degree + 1;
         let mut exponents = vec![0; self.dimension];
@@ -79,17 +96,19 @@ impl Polynomial {
         exponents
     }
 
+    /// Gets the coefficient for the given exponents.
     #[inline]
     pub fn get(&self, exponents: &[usize]) -> f64 {
         *self.coeffs.get(&self.index(exponents)).unwrap_or(&0.0)
     }
 
+    /// Sets the coefficient for the given exponents.
     #[inline]
     pub fn set(&mut self, exponents: &[usize], value: f64) {
         assert_eq!(exponents.len(), self.dimension);
         assert!(
             value.is_finite(),
-            "coefficient non fini {} en {:?}",
+            "non-finite coefficient {} at {:?}",
             value,
             exponents
         );
@@ -101,12 +120,14 @@ impl Polynomial {
         }
     }
 
+    /// Creates a constant polynomial.
     pub fn constant(dimension: usize, degree: usize, value: f64) -> Self {
         let mut p = Self::new(dimension, degree);
         p.set(&vec![0; dimension], value);
         p
     }
 
+    /// Creates a linear monomial.
     pub fn variable(dimension: usize, degree: usize, variable: usize, coefficient: f64) -> Self {
         assert!(variable < dimension);
         let mut p = Self::new(dimension, degree);
@@ -116,14 +137,12 @@ impl Polynomial {
         p
     }
 
+    /// Computes the total degree of exponents.
     pub fn total_degree(exponents: &[usize]) -> usize {
         exponents.iter().sum()
     }
 
-    /// Évaluation : toujours rigoureuse (Interval de bout en bout), que les
-    /// coefficients stockés soient exacts ou déjà arrondis — c'est le reste
-    /// (remainder) du TaylorModel appelant qui compense un éventuel arrondi
-    /// de coefficient, pas cette fonction.
+    /// Evaluates the polynomial over an interval domain.
     pub fn evaluate(&self, domain: &[Interval]) -> Interval {
         assert_eq!(domain.len(), self.dimension);
         let mut result = zero_iv();
@@ -140,6 +159,7 @@ impl Polynomial {
         result
     }
 
+    /// Splits the polynomial into low and high degree parts.
     pub fn split(&self, order: usize) -> (Polynomial, Polynomial) {
         let mut low = Polynomial::new(self.dimension, order);
         let mut high = Polynomial::new(self.dimension, self.degree);
@@ -154,6 +174,7 @@ impl Polynomial {
         (low, high)
     }
 
+    /// Evaluates the polynomial at a point (f64).
     pub fn sample(&self, point: &[f64]) -> f64 {
         assert_eq!(point.len(), self.dimension);
         let mut result = 0.0;
@@ -168,6 +189,7 @@ impl Polynomial {
         result
     }
 
+    /// Returns all terms as a vector of (exponents, coefficient).
     pub fn terms(&self) -> Vec<(Vec<usize>, f64)> {
         let mut terms: Vec<_> = self
             .coeffs
@@ -178,11 +200,13 @@ impl Polynomial {
         terms
     }
 
+    /// Removes coefficients below the threshold and returns their contribution.
     pub fn sparsify(&mut self, domain: &[Interval], threshold: f64) -> Interval {
         assert_eq!(domain.len(), self.dimension);
         if threshold.is_infinite() || threshold <= 0.0 {
             return zero_iv();
         }
+
         let to_remove: Vec<usize> = self
             .coeffs
             .iter()
@@ -205,16 +229,16 @@ impl Polynomial {
         dropped
     }
 
-    // -------------------------------------------------------------------
-    // Versions "checked" : mêmes opérations, mais renvoient en plus le
-    // résidu d'arrondi EXACT accumulé (jamais deviné) sur toutes les
-    // combinaisons de coefficients effectuées.
-    // -------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // Checked operations with explicit rounding error tracking
+    // ------------------------------------------------------------------------
 
+    /// Addition with exact rounding error tracking.
     pub fn add_checked(mut self, other: Polynomial) -> (Polynomial, Interval) {
         assert_eq!(self.dimension, other.dimension);
         assert_eq!(self.degree, other.degree);
         let mut error = zero_iv();
+
         for (&idx, &c2) in other.coeffs.iter() {
             let exponents = other.decode(idx);
             let c1 = self.get(&exponents);
@@ -226,10 +250,12 @@ impl Polynomial {
         (self, error)
     }
 
+    /// Subtraction with exact rounding error tracking.
     pub fn sub_checked(mut self, other: Polynomial) -> (Polynomial, Interval) {
         assert_eq!(self.dimension, other.dimension);
         assert_eq!(self.degree, other.degree);
         let mut error = zero_iv();
+
         for (&idx, &c2) in other.coeffs.iter() {
             let exponents = other.decode(idx);
             let c1 = self.get(&exponents);
@@ -241,11 +267,10 @@ impl Polynomial {
         (self, error)
     }
 
-    /// Multiplication rigoureuse : accumulation EXACTE en Interval par
-    /// monôme de sortie (plusieurs paires (idx1,idx2) peuvent contribuer au
-    /// même monôme — l'accumulation en Interval reste correcte quel que
-    /// soit leur nombre), arrondi à un seul f64 par monôme seulement à la
-    /// toute fin.
+    /// Multiplication with exact rounding error tracking.
+    ///
+    /// Accumulates contributions exactly using interval arithmetic,
+    /// then rounds each coefficient once at the end.
     pub fn mul_checked(&self, other: &Polynomial) -> (Polynomial, Interval) {
         assert_eq!(self.dimension, other.dimension);
         let degree = self.degree + other.degree;
@@ -288,9 +313,10 @@ impl Polynomial {
     }
 }
 
-// Versions "non checked" : gardées pour les usages hors TaylorModel (ex.
-// reconstruction de q_l dans `precondition`, où la rigueur vient d'ailleurs
-// — la QR elle-même est déjà une heuristique en float chez Bünger).
+// ----------------------------------------------------------------------------
+// Operator implementations for Polynomial (unchecked)
+// ----------------------------------------------------------------------------
+
 impl Add for Polynomial {
     type Output = Polynomial;
     fn add(self, other: Polynomial) -> Polynomial {
@@ -312,10 +338,11 @@ impl Mul for Polynomial {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Caches — mémorisent maintenant aussi le résidu d'arrondi de l'opération
-// qu'ils remplacent, pour ne rien perdre en cas de hit.
-// -----------------------------------------------------------------------------
+// ============================================================================
+// Caches
+// ============================================================================
+
+/// Key for polynomial caching based on coefficients.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PolyKey(Vec<(usize, u64)>);
 
@@ -332,20 +359,26 @@ impl PolyKey {
 }
 
 thread_local! {
+    /// Cache for multiplication results.
     static MUL_CACHE: RefCell<HashMap<(PolyKey, PolyKey), (Polynomial, Interval, Interval, Interval, Interval)>> =
         RefCell::new(HashMap::new());
+
+    /// Cache for integration results.
     static INTEGRATE_CACHE: RefCell<HashMap<PolyKey, (Polynomial, Interval, Interval)>> =
         RefCell::new(HashMap::new());
 }
 
+/// Clears all caches.
 pub fn clear_caches() {
     MUL_CACHE.with(|c| c.borrow_mut().clear());
     INTEGRATE_CACHE.with(|c| c.borrow_mut().clear());
 }
 
-// -----------------------------------------------------------------------------
+// ============================================================================
 // TaylorModel
-// -----------------------------------------------------------------------------
+// ============================================================================
+
+/// A Taylor model consisting of a polynomial part and a remainder interval.
 #[derive(Clone, Debug)]
 pub struct TaylorModel {
     pub polynomial: Polynomial,
@@ -355,6 +388,7 @@ pub struct TaylorModel {
 }
 
 impl TaylorModel {
+    /// Creates a constant Taylor model.
     pub fn constant(value: f64, dimension: usize, order: usize, domain: Vec<Interval>) -> Self {
         Self {
             polynomial: Polynomial::constant(dimension, order, value),
@@ -364,6 +398,7 @@ impl TaylorModel {
         }
     }
 
+    /// Creates a linear variable Taylor model.
     pub fn variable(
         variable: usize,
         coefficient: f64,
@@ -379,6 +414,7 @@ impl TaylorModel {
         }
     }
 
+    /// Creates a Taylor model from an interval (constant polynomial, interval remainder).
     pub fn from_interval(
         value: Interval,
         dimension: usize,
@@ -393,14 +429,17 @@ impl TaylorModel {
         }
     }
 
+    /// Computes the range (interval enclosure) of the Taylor model.
     pub fn range(&self) -> Interval {
         self.polynomial.evaluate(&self.domain) + self.remainder
     }
 
+    /// Computes the range of the polynomial part only.
     pub fn polynomial_range(&self) -> Interval {
         self.polynomial.evaluate(&self.domain)
     }
 
+    /// Sparsifies the polynomial part and merges dropped terms into the remainder.
     pub fn sparsify(mut self, threshold: f64) -> TaylorModel {
         if threshold.is_infinite() || threshold <= 0.0 {
             return self;
@@ -410,6 +449,7 @@ impl TaylorModel {
         self
     }
 
+    /// Computes the power of the Taylor model.
     pub fn powi(&self, exponent: usize) -> TaylorModel {
         if exponent == 0 {
             return TaylorModel::constant(
@@ -426,14 +466,15 @@ impl TaylorModel {
         result
     }
 
+    /// Samples the Taylor model at a point.
     pub fn sample(&self, point: &[f64]) -> f64 {
         self.polynomial.sample(point)
     }
 
-    /// Intègre en temps. L'antidérivée (division coeff/k, puis somme dans
-    /// antideriv) est calculée coefficient par coefficient EN Interval,
-    /// arrondie une seule fois par coefficient final — le résidu est plié
-    /// dans le remainder, pas deviné.
+    /// Integrates the Taylor model with respect to time.
+    ///
+    /// The antiderivative is computed exactly using interval arithmetic,
+    /// then rounded with error tracking.
     pub fn integrate_time(&self) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
         let key = PolyKey::from(&self.polynomial);
@@ -443,15 +484,13 @@ impl TaylorModel {
                 return cached.clone();
             }
 
-            // Accumulation exacte (Interval) par monôme de l'antidérivée.
+            // Accumulate antiderivative exactly using interval arithmetic
             let mut acc: HashMap<usize, Interval> = HashMap::new();
             for (exponents, coeff) in self.polynomial.terms() {
                 let mut new_exp = exponents.clone();
                 new_exp[time_var] += 1;
                 let k = new_exp[time_var] as f64;
                 let key_idx = {
-                    // encode new_exp comme index — réutilise Polynomial::index
-                    // via un polynôme temporaire de la bonne dimension/degré.
                     let tmp = Polynomial::new(self.polynomial.dimension, self.order + 1);
                     tmp.index_pub(&new_exp)
                 };
@@ -489,10 +528,7 @@ impl TaylorModel {
         result.sparsify(get_sparsity_threshold())
     }
 
-    /// Substitution t := valeur fixe. `t^k` est exact en Interval (`powi`),
-    /// mais `coeff * factor` et la somme dans new_poly ne le sont pas :
-    /// même traitement — accumulation exacte, arrondi une fois, résidu plié
-    /// dans le remainder du résultat.
+    /// Substitutes time with a fixed value.
     pub fn substitute_time(&self, t: f64) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
         let new_dim = time_var;
@@ -527,9 +563,8 @@ impl TaylorModel {
         }
     }
 
+    /// Extends the Taylor model with an extra time dimension.
     pub fn extend_with_time(&self, h: f64) -> TaylorModel {
-        // Pas de combinaison de coefficients ici (juste ajout d'une variable
-        // muette à exposant 0) : rien à suivre.
         let new_dim = self.polynomial.dimension + 1;
         let mut new_poly = Polynomial::new(new_dim, self.order);
         for (exponents, coeff) in self.polynomial.terms() {
@@ -547,6 +582,10 @@ impl TaylorModel {
         }
     }
 }
+
+// ----------------------------------------------------------------------------
+// Operator implementations for TaylorModel
+// ----------------------------------------------------------------------------
 
 impl Add for TaylorModel {
     type Output = TaylorModel;
@@ -605,6 +644,7 @@ impl Mul for TaylorModel {
             entry
         });
 
+        // Compute error bounds using intersection or convex hull
         let g1 =
             high_range + p_range * other.remainder + self.remainder * (q_range + other.remainder);
         let g2 =
@@ -626,6 +666,10 @@ impl Mul for TaylorModel {
         result.sparsify(get_sparsity_threshold())
     }
 }
+
+// ----------------------------------------------------------------------------
+// Display implementation
+// ----------------------------------------------------------------------------
 
 impl fmt::Display for TaylorModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -661,19 +705,24 @@ impl fmt::Display for TaylorModel {
     }
 }
 
+// ============================================================================
+// Composition utilities
+// ============================================================================
+
 impl Polynomial {
-    /// Rendu public de `index`, nécessaire pour construire des clés depuis
-    /// `integrate_time`/`substitute_time` sans dupliquer l'encodage.
+    /// Public version of `index` for use in other modules.
     pub fn index_pub(&self, exponents: &[usize]) -> usize {
         self.index(exponents)
     }
 
+    /// Composes the polynomial with a vector of Taylor models.
     pub fn compose_tm(&self, args: &[TaylorModel]) -> TaylorModel {
         assert_eq!(args.len(), self.dimension);
         let dim = args[0].polynomial.dimension;
         let order = args[0].order;
         let domain = args[0].domain.clone();
         let mut result = TaylorModel::constant(0.0, dim, order, domain.clone());
+
         for (exponents, coeff) in self.terms() {
             let mut term = TaylorModel::constant(coeff, dim, order, domain.clone());
             for (j, &e) in exponents.iter().enumerate() {
@@ -687,6 +736,7 @@ impl Polynomial {
     }
 }
 
+/// Composes a vector of Taylor models with another vector.
 pub fn compose(left: &[TaylorModel], right: &[TaylorModel]) -> Vec<TaylorModel> {
     left.iter()
         .map(|li| {
@@ -699,11 +749,17 @@ pub fn compose(left: &[TaylorModel], right: &[TaylorModel]) -> Vec<TaylorModel> 
         .collect()
 }
 
+// ============================================================================
+// Utility constructors
+// ============================================================================
+
 impl TaylorModel {
+    /// Creates a standard domain [-1, 1]^dim.
     pub fn standard_domain(dim: usize) -> Vec<Interval> {
         (0..dim).map(|_| interval!(-1.0, 1.0).unwrap()).collect()
     }
 
+    /// Creates a parameterized initial set from centers and radii.
     pub fn parameterized_initial_set(
         centers: &[f64],
         radii: &[f64],
