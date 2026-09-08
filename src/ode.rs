@@ -1,9 +1,25 @@
+//! Taylor-model verified ODE solver, following F. Bünger's (2020)
+//! two-stage method: [`picard_iteration`] builds the polynomial p by
+//! fixed-point of the Picard operator K(y) = y₀ + ∫ₜ₀ᵗ f(y), then
+//! [`verify_remainder`] searches by ε-inflation for a remainder E such
+//! that K(p+E) ⊆ p+E (Schauder fixed-point theorem, cf. [`solve`] for
+//! the main entry point). `preconditioning` (Bünger, §4) realigns the
+//! system at each step via a QR decomposition to limit the wrapping
+//! effect.
+
 use crate::taylor::TaylorModel;
 use inari::{Interval, interval};
 use matplotlib::pyplot::subplots;
 
+/// Right-hand side f of the ODE y' = f(y), expressed directly in
+/// Taylor model arithmetic.
 pub type OdeFunction = fn(Vec<TaylorModel>) -> Vec<TaylorModel>;
 
+/// Parameters of Bünger's integrator: `order` (Taylor model
+/// truncation), `h` (time step), `epsilon`/`delta` (ε-inflation
+/// factors, cf. [`inflate_remainder`]), `max_inflation_iterations`,
+/// `blunt_tau` (optional preconditioning regularization), and
+/// `preconditioning` (enables the QR variant).
 #[derive(Clone, Debug)]
 pub struct BungerOptions {
     pub order: usize,
@@ -65,6 +81,8 @@ pub fn inflate_remainder(remainder: Interval, epsilon: f64, delta: f64) -> Inter
     factor * remainder + delta_interval
 }
 
+/// Rebuilds a `TaylorModel` identical to `tm` but with `remainder`
+/// substituted (same polynomial and domain).
 pub fn with_remainder(tm: &TaylorModel, remainder: Interval) -> TaylorModel {
     TaylorModel {
         polynomial: tm.polynomial.clone(),
@@ -74,6 +92,7 @@ pub fn with_remainder(tm: &TaylorModel, remainder: Interval) -> TaylorModel {
     }
 }
 
+/// Tests the inclusion a ⊆ b between two intervals.
 pub fn interval_subset(a: Interval, b: Interval) -> bool {
     b.inf() <= a.inf() && a.sup() <= b.sup()
 }
@@ -85,6 +104,8 @@ pub fn remainder_subset(image: &TaylorModel, enclosure: &TaylorModel) -> bool {
     interval_subset(effective, enclosure.remainder)
 }
 
+/// Applies [`remainder_subset`] componentwise (stopping condition of
+/// the ε-inflation in [`verify_remainder`]).
 pub fn vector_subset(image: &[TaylorModel], enclosure: &[TaylorModel]) -> bool {
     assert_eq!(image.len(), enclosure.len());
     image
@@ -134,13 +155,13 @@ pub fn bunger_step(
 ) -> Option<Vec<TaylorModel>> {
     crate::taylor::clear_caches();
 
-    // Désactiver la sparsification pendant la Picard iteration (seuil infini)
+    // Disable sparsification during the Picard iteration (infinite threshold)
     let old_threshold = crate::taylor::get_sparsity_threshold();
     crate::taylor::set_sparsity_threshold(f64::INFINITY);
 
     let polynomial = picard_iteration(initial.clone(), f);
 
-    // Restaurer le seuil pour l'inflation
+    // Restore the threshold for the inflation
     crate::taylor::set_sparsity_threshold(old_threshold);
 
     verify_remainder(
@@ -153,6 +174,8 @@ pub fn bunger_step(
     )
 }
 
+/// Rigorous enclosure ([`TaylorModel::range`]) of each state
+/// component.
 pub fn ranges(state: &[TaylorModel]) -> Vec<Interval> {
     state.iter().map(|tm| tm.range()).collect()
 }
@@ -163,6 +186,10 @@ pub fn endpoint(state: &[TaylorModel], h: f64) -> Vec<TaylorModel> {
     state.iter().map(|tm| tm.substitute_time(h)).collect()
 }
 
+/// Main integration loop (without preconditioning): repeats
+/// [`bunger_step`] then [`endpoint`] over `n_steps` steps of size
+/// `options.h`, starting from `t0`. Returns the trajectory (t, enclosure)
+/// at each step, or an error if remainder verification fails.
 pub fn solve_bunger(
     initial: Vec<TaylorModel>,
     f: OdeFunction,

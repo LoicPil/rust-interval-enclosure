@@ -1,3 +1,6 @@
+//! Timing utility macro, for quickly profiling a step (Picard, inflation,
+//! quadrature, ...) with no external dependency.
+
 /// Times any expression and prints "[timing] <label>: <elapsed>" to stdout,
 /// then returns the expression's value unchanged — so it composes with `?`,
 /// assignment, anything.

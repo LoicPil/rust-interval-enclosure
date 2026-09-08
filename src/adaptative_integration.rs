@@ -1,3 +1,11 @@
+//! Adaptive-refinement certified quadrature: recursively subdivides the
+//! integration interval, prioritizing (via a `BinaryHeap`) the cell with
+//! the largest error term ([`LocalCell::error_bound`]), until the total
+//! enclosure width drops below `tolerance`. [`LocalQuadrature`]
+//! generalizes the local rule used (midpoint, trapezoidal, Simpson,
+//! Gauss-Legendre — see [`integration`](crate::integration) for the
+//! non-adaptive variants).
+
 use crate::{
     factorial_interval,
     integration::{GaussLegendreRule, GaussianRule},
@@ -26,6 +34,9 @@ fn pairwise_sum(intervals: &[Interval]) -> Interval {
     }
 }
 
+/// Enclosure of ∫ₐᵇ f over a sub-cell `[a, b]`, with the upper bound
+/// `error_bound` of the error term (used to order the priority queue in
+/// [`adaptive_integration`]).
 #[derive(Clone, Copy)]
 pub struct LocalCell {
     a: f64,
@@ -61,6 +72,9 @@ impl Ord for HeapCell {
     }
 }
 
+/// Local quadrature rule: encloses ∫ₐᵇ f over a single cell `[a, b]` and
+/// provides the associated error term. Implemented by [`Midpoint`],
+/// [`Trapezoidal`], [`Simpson`] and [`GaussLegendre`].
 pub trait LocalQuadrature<F> {
     fn integrate_cell(&self, f: &F, a: f64, b: f64) -> Result<LocalCell, IntervalError>;
 }
@@ -219,6 +233,13 @@ where
     }
 }
 
+/// Encloses ∫ₐᵇ f by adaptive refinement: at each iteration, splits the
+/// cell with the largest `error_bound` (priority queue) in two, until
+/// the total enclosure width drops below `tolerance` or `max_cells`
+/// cells have been created.
+///
+/// # Panics
+/// Panics if `a > b`, `tolerance <= 0.0` or `max_cells == 0`.
 pub fn adaptive_integration<F, M>(
     f: F,
     method: M,

@@ -1,9 +1,23 @@
+//! Taylor models: [`Polynomial`] (sparse, multivariate f64 coefficients)
+//! + [`TaylorModel`] = polynomial + remainder (`Interval`), guaranteeing
+//! f(x) ∈ p(x) + remainder for all x in `domain`.
+//!
+//! Every combination of coefficients (`+`, `×`, substitution, ...) is
+//! computed exactly in interval arithmetic then rounded to a single
+//! f64 via [`round_to_point`]; the rounding residual is returned
+//! explicitly and absorbed into `remainder`, never guessed. Implements
+//! the arithmetic described in F. Bünger, *A Taylor model toolbox for
+//! solving ODEs implemented in MATLAB/INTLAB*, J. Comput. Appl. Math.
+//! 368 (2020), 112511.
+
 use inari::{Interval, interval};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
 
+/// Default sparsification threshold (removal of negligible-magnitude
+/// coefficients, cf. [`Polynomial::sparsify`]).
 pub const SPARSITY_THRESHOLD: f64 = 1e-16;
 
 thread_local! {
@@ -26,9 +40,10 @@ fn pt(x: f64) -> Interval {
     interval!(x, x).unwrap()
 }
 
-/// Arrondit une valeur EXACTE (calculée en Interval) à un unique coefficient
-/// f64, et renvoie le résidu exact qu'il faut absorber ailleurs (dans le
-/// remainder du TaylorModel). Invariant garanti : exact ⊆ pt(point) + residual.
+/// Rounds an EXACT value (computed in Interval) to a single f64
+/// coefficient, and returns the exact residual that must be absorbed
+/// elsewhere (in the TaylorModel's remainder). Guaranteed invariant:
+/// exact ⊆ pt(point) + residual.
 #[inline]
 fn round_to_point(exact: Interval) -> (f64, Interval) {
     let point = exact.mid();
@@ -36,10 +51,11 @@ fn round_to_point(exact: Interval) -> (f64, Interval) {
 }
 
 // -----------------------------------------------------------------------------
-// Polynomial — coefficients f64 (rapide, comme demandé), mais toute
-// combinaison de deux coefficients passe par `round_to_point` : le calcul
-// exact se fait en Interval, seul le résultat stocké est un f64, et le
-// résidu de cet arrondi est renvoyé explicitement plutôt que deviné.
+// Polynomial — f64 coefficients (fast, as required), but every
+// combination of two coefficients goes through `round_to_point`: the
+// exact computation happens in Interval, only the stored result is an
+// f64, and the residual of that rounding is returned explicitly rather
+// than guessed.
 // -----------------------------------------------------------------------------
 #[derive(Clone, Debug)]
 pub struct Polynomial {
@@ -89,7 +105,7 @@ impl Polynomial {
         assert_eq!(exponents.len(), self.dimension);
         assert!(
             value.is_finite(),
-            "coefficient non fini {} en {:?}",
+            "non-finite coefficient {} at {:?}",
             value,
             exponents
         );
@@ -120,10 +136,10 @@ impl Polynomial {
         exponents.iter().sum()
     }
 
-    /// Évaluation : toujours rigoureuse (Interval de bout en bout), que les
-    /// coefficients stockés soient exacts ou déjà arrondis — c'est le reste
-    /// (remainder) du TaylorModel appelant qui compense un éventuel arrondi
-    /// de coefficient, pas cette fonction.
+    /// Evaluation: always rigorous (Interval end-to-end), whether the
+    /// stored coefficients are exact or already rounded — it is the
+    /// remainder of the calling TaylorModel that compensates for any
+    /// coefficient rounding, not this function.
     pub fn evaluate(&self, domain: &[Interval]) -> Interval {
         assert_eq!(domain.len(), self.dimension);
         let mut result = zero_iv();
@@ -206,9 +222,9 @@ impl Polynomial {
     }
 
     // -------------------------------------------------------------------
-    // Versions "checked" : mêmes opérations, mais renvoient en plus le
-    // résidu d'arrondi EXACT accumulé (jamais deviné) sur toutes les
-    // combinaisons de coefficients effectuées.
+    // "checked" versions: same operations, but additionally return the
+    // accumulated EXACT rounding residual (never guessed) over all
+    // coefficient combinations performed.
     // -------------------------------------------------------------------
 
     pub fn add_checked(mut self, other: Polynomial) -> (Polynomial, Interval) {
@@ -241,11 +257,11 @@ impl Polynomial {
         (self, error)
     }
 
-    /// Multiplication rigoureuse : accumulation EXACTE en Interval par
-    /// monôme de sortie (plusieurs paires (idx1,idx2) peuvent contribuer au
-    /// même monôme — l'accumulation en Interval reste correcte quel que
-    /// soit leur nombre), arrondi à un seul f64 par monôme seulement à la
-    /// toute fin.
+    /// Rigorous multiplication: EXACT Interval accumulation per output
+    /// monomial (several (idx1,idx2) pairs may contribute to the same
+    /// monomial — the Interval accumulation stays correct regardless of
+    /// how many), rounded to a single f64 per monomial only at the very
+    /// end.
     pub fn mul_checked(&self, other: &Polynomial) -> (Polynomial, Interval) {
         assert_eq!(self.dimension, other.dimension);
         let degree = self.degree + other.degree;
@@ -288,9 +304,9 @@ impl Polynomial {
     }
 }
 
-// Versions "non checked" : gardées pour les usages hors TaylorModel (ex.
-// reconstruction de q_l dans `precondition`, où la rigueur vient d'ailleurs
-// — la QR elle-même est déjà une heuristique en float chez Bünger).
+// "Unchecked" versions: kept for uses outside TaylorModel (e.g.
+// reconstructing q_l in `precondition`, where rigor comes from elsewhere
+// — the QR itself is already a float heuristic in Bünger's method).
 impl Add for Polynomial {
     type Output = Polynomial;
     fn add(self, other: Polynomial) -> Polynomial {
@@ -313,8 +329,8 @@ impl Mul for Polynomial {
 }
 
 // -----------------------------------------------------------------------------
-// Caches — mémorisent maintenant aussi le résidu d'arrondi de l'opération
-// qu'ils remplacent, pour ne rien perdre en cas de hit.
+// Caches — now also memoize the rounding residual of the operation they
+// replace, so nothing is lost on a cache hit.
 // -----------------------------------------------------------------------------
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct PolyKey(Vec<(usize, u64)>);
@@ -346,6 +362,8 @@ pub fn clear_caches() {
 // -----------------------------------------------------------------------------
 // TaylorModel
 // -----------------------------------------------------------------------------
+/// Taylor model p + E: guarantees f(x) ∈ `polynomial`(x) + `remainder`
+/// for all x ∈ `domain`. `order` is the total truncation degree.
 #[derive(Clone, Debug)]
 pub struct TaylorModel {
     pub polynomial: Polynomial,
@@ -393,10 +411,12 @@ impl TaylorModel {
         }
     }
 
+    /// Rigorous range enclosure: p(`domain`) + `remainder`.
     pub fn range(&self) -> Interval {
         self.polynomial.evaluate(&self.domain) + self.remainder
     }
 
+    /// Range of the polynomial part alone (without the remainder).
     pub fn polynomial_range(&self) -> Interval {
         self.polynomial.evaluate(&self.domain)
     }
@@ -430,10 +450,10 @@ impl TaylorModel {
         self.polynomial.sample(point)
     }
 
-    /// Intègre en temps. L'antidérivée (division coeff/k, puis somme dans
-    /// antideriv) est calculée coefficient par coefficient EN Interval,
-    /// arrondie une seule fois par coefficient final — le résidu est plié
-    /// dans le remainder, pas deviné.
+    /// Integrates over time. The antiderivative (coeff/k division, then
+    /// summed into antideriv) is computed coefficient by coefficient IN
+    /// Interval, rounded only once per final coefficient — the residual
+    /// is folded into the remainder, not guessed.
     pub fn integrate_time(&self) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
         let key = PolyKey::from(&self.polynomial);
@@ -443,15 +463,15 @@ impl TaylorModel {
                 return cached.clone();
             }
 
-            // Accumulation exacte (Interval) par monôme de l'antidérivée.
+            // Exact (Interval) accumulation per monomial of the antiderivative.
             let mut acc: HashMap<usize, Interval> = HashMap::new();
             for (exponents, coeff) in self.polynomial.terms() {
                 let mut new_exp = exponents.clone();
                 new_exp[time_var] += 1;
                 let k = new_exp[time_var] as f64;
                 let key_idx = {
-                    // encode new_exp comme index — réutilise Polynomial::index
-                    // via un polynôme temporaire de la bonne dimension/degré.
+                    // encode new_exp as an index — reuses Polynomial::index via a
+                    // temporary polynomial of the right dimension/degree.
                     let tmp = Polynomial::new(self.polynomial.dimension, self.order + 1);
                     tmp.index_pub(&new_exp)
                 };
@@ -489,10 +509,10 @@ impl TaylorModel {
         result.sparsify(get_sparsity_threshold())
     }
 
-    /// Substitution t := valeur fixe. `t^k` est exact en Interval (`powi`),
-    /// mais `coeff * factor` et la somme dans new_poly ne le sont pas :
-    /// même traitement — accumulation exacte, arrondi une fois, résidu plié
-    /// dans le remainder du résultat.
+    /// Substitution t := fixed value. `t^k` is exact in Interval (`powi`),
+    /// but `coeff * factor` and the sum in new_poly are not: same
+    /// treatment — exact accumulation, rounded once, residual folded
+    /// into the result's remainder.
     pub fn substitute_time(&self, t: f64) -> TaylorModel {
         let time_var = self.polynomial.dimension - 1;
         let new_dim = time_var;
@@ -528,8 +548,8 @@ impl TaylorModel {
     }
 
     pub fn extend_with_time(&self, h: f64) -> TaylorModel {
-        // Pas de combinaison de coefficients ici (juste ajout d'une variable
-        // muette à exposant 0) : rien à suivre.
+        // No coefficient combination here (just adding a dummy variable
+        // with exponent 0): nothing to track.
         let new_dim = self.polynomial.dimension + 1;
         let mut new_poly = Polynomial::new(new_dim, self.order);
         for (exponents, coeff) in self.polynomial.terms() {
@@ -662,8 +682,8 @@ impl fmt::Display for TaylorModel {
 }
 
 impl Polynomial {
-    /// Rendu public de `index`, nécessaire pour construire des clés depuis
-    /// `integrate_time`/`substitute_time` sans dupliquer l'encodage.
+    /// Public exposure of `index`, needed to build keys from
+    /// `integrate_time`/`substitute_time` without duplicating the encoding.
     pub fn index_pub(&self, exponents: &[usize]) -> usize {
         self.index(exponents)
     }
