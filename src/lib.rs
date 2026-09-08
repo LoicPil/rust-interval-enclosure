@@ -1,14 +1,3 @@
-//! # interval_enclosure
-//!
-//! Interval arithmetic for rigorous range enclosure of a function
-//! (`range_enclosure*`), extended to Taylor models for verified ODE
-//! solving (Bünger's method).
-//!
-//! ## Layout
-//! - [`taylor`]: `Polynomial` / `TaylorModel` types and their arithmetic
-//! - [`ode`]: Picard iteration + ε-inflation ([`ode::solve`])
-//! - [`integration`], [`adaptative_integration`]: certified quadrature
-//!   (midpoint, trapezoidal, Simpson, Gauss-Legendre)
 #![doc = include_str!("../README.md")]
 
 use core::f64;
@@ -24,7 +13,7 @@ pub mod timing;
 pub mod wilkinson;
 
 /// Test function f(x) = sin(x) - x·cos(x), used to reproduce the
-/// convergence results.
+/// convergence results from C. Troestler's course notes.
 pub fn f(x: Interval) -> Interval {
     x.sin() - x * x.cos()
 }

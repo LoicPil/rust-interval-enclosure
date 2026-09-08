@@ -52,7 +52,7 @@ This crate uses the [inari](https://github.com/steffahn/inari) library with MPFR
 
 ### Certified Quadrature
 
-The quadrature methods in this crate follow the approach described in Gautschi [1]:
+The quadrature methods in this crate follow the approach described in Gautschi [5]:
 
 1. **Gauss-Legendre quadrature** is constructed via the Golub-Welsch algorithm:
    - The Jacobi matrix is formed from the recurrence coefficients of Legendre polynomials
@@ -70,6 +70,12 @@ The quadrature methods in this crate follow the approach described in Gautschi [
 
 The ODE verification method follows **Bünger [1]**: Picard iteration computes the Taylor polynomial, then an ε-δ inflation loop verifies the enclosure condition `K(p+E) ⊆ p+E` using Schauder's fixed-point theorem.
 
+## Dependencies
+
+- [rust-matplotlib](https://github.com/Chris00/rust-matplotlib) for plotting (requires Python + matplotlib)
+- [inari](https://github.com/steffahn/inari) for interval arithmetic (requires MPFR + GMP)
+- [nalgebra](https://github.com/dimforge/nalgebra) for linear algebra (Golub-Welsch)
+
 ## References
 
 1. **[Bünger, F. (2020)](https://doi.org/10.1016/j.cam.2019.112511)**  
@@ -85,11 +91,9 @@ The ODE verification method follows **Bünger [1]**: Picard iteration computes t
 4. **[NIST Digital Library of Mathematical Functions (2024)](https://dlmf.nist.gov/)**  
    Chapter 18: Orthogonal Polynomials. Table 18.3.1 for leading coefficients and norms.
 
-## Dependencies
-
-- [rust-matplotlib](https://github.com/Chris00/rust-matplotlib) for plotting (requires Python + matplotlib)
-- [inari](https://github.com/steffahn/inari) for interval arithmetic (requires MPFR + GMP)
-- [nalgebra](https://github.com/dimforge/nalgebra) for linear algebra (Golub-Welsch)
+5. **[Gautschi, W. (2004)](https://doi.org/10.1093/acprof:oso/9780198506720.001.0001)**  
+   *Orthogonal Polynomials: Computation and Approximation*  
+   Oxford University Press.
 
 ## Example: ODE Integration
 

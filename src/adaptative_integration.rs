@@ -36,16 +36,9 @@ fn pairwise_sum(intervals: &[Interval]) -> Interval {
     }
 }
 
-<<<<<<< HEAD
-/// A single subinterval cell produced by a local quadrature rule.
-///
-/// It stores the interval bounds, the computed enclosure of the integral,
-/// and an estimate of the error bound used for refinement decisions.
-=======
 /// Enclosure of ∫ₐᵇ f over a sub-cell `[a, b]`, with the upper bound
 /// `error_bound` of the error term (used to order the priority queue in
 /// [`adaptive_integration`]).
->>>>>>> dev
 #[derive(Clone, Copy)]
 pub struct LocalCell {
     /// Left endpoint of the subinterval.
@@ -89,16 +82,10 @@ impl Ord for HeapCell {
     }
 }
 
-<<<<<<< HEAD
-/// Trait for a local quadrature rule that can integrate a function on a single cell.
-///
-/// Implementations must return a `LocalCell` containing the integral enclosure
-/// and an error bound.
-=======
 /// Local quadrature rule: encloses ∫ₐᵇ f over a single cell `[a, b]` and
 /// provides the associated error term. Implemented by [`Midpoint`],
 /// [`Trapezoidal`], [`Simpson`] and [`GaussLegendre`].
->>>>>>> dev
+
 pub trait LocalQuadrature<F> {
     /// Integrates `f` on `[a, b]` and returns a `LocalCell`.
     fn integrate_cell(&self, f: &F, a: f64, b: f64) -> Result<LocalCell, IntervalError>;
@@ -267,16 +254,6 @@ where
     }
 }
 
-<<<<<<< HEAD
-/// Computes a certified enclosure of `∫_a^b f(x) dx` using adaptive subdivision.
-///
-/// Starts with one cell covering `[a, b]` and repeatedly splits the cell with
-/// the largest error estimate until the enclosure's width is below `tolerance`
-/// or `max_cells` is reached.
-///
-/// # Panics
-/// If `a > b`, `tolerance <= 0.0`, or `max_cells < 1`.
-=======
 /// Encloses ∫ₐᵇ f by adaptive refinement: at each iteration, splits the
 /// cell with the largest `error_bound` (priority queue) in two, until
 /// the total enclosure width drops below `tolerance` or `max_cells`
@@ -284,7 +261,7 @@ where
 ///
 /// # Panics
 /// Panics if `a > b`, `tolerance <= 0.0` or `max_cells == 0`.
->>>>>>> dev
+
 pub fn adaptive_integration<F, M>(
     f: F,
     method: M,
