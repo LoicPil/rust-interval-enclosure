@@ -1,3 +1,16 @@
+//! # interval_enclosure
+//!
+//! Interval arithmetic for rigorous range enclosure of a function
+//! (`range_enclosure*`), extended to Taylor models for verified ODE
+//! solving (Bünger's method).
+//!
+//! ## Layout
+//! - [`taylor`]: `Polynomial` / `TaylorModel` types and their arithmetic
+//! - [`ode`]: Picard iteration + ε-inflation ([`ode::solve`])
+//! - [`integration`], [`adaptative_integration`]: certified quadrature
+//!   (midpoint, trapezoidal, Simpson, Gauss-Legendre)
+#![doc = include_str!("../README.md")]
+
 use core::f64;
 use inari::{Interval, IntervalError, const_interval, interval};
 
@@ -10,14 +23,23 @@ pub mod taylor;
 pub mod timing;
 pub mod wilkinson;
 
+/// Test function f(x) = sin(x) - x·cos(x), used to reproduce the
+/// convergence results.
 pub fn f(x: Interval) -> Interval {
     x.sin() - x * x.cos()
 }
 
+/// Exact derivative f'(x) = x·sin(x), used by [`range_enclosure_order1`].
 pub fn fprime(x: Interval) -> Interval {
     x * x.sin()
 }
 
+/// Range enclosure of `f` over `x` by recursive bisection (natural form,
+/// linear convergence in the width of the subintervals).
+///
+/// Splits `x` as long as its width exceeds `eps` (and `max_depth` is not
+/// reached), taking the convex hull (`convex_hull`) of the enclosures of
+/// both halves.
 pub fn range_enclosure<F>(f: F, x: Interval, eps: f64, max_depth: u32) -> Interval
 where
     F: Fn(Interval) -> Interval,
@@ -38,6 +60,12 @@ where
     recurse(&f, x, eps, max_depth)
 }
 
+/// Range enclosure of `f` over `x` by the order-1 centered (mean-value)
+/// form: f(m) + f'([x])·(x − m), where m is the midpoint of `x`.
+///
+/// Converges quadratically in the width of `x` (vs. linearly for
+/// [`range_enclosure`]), per the classic result of Moore
+/// (see Moore, Kearfott & Cloud, *Introduction to Interval Analysis*, SIAM 2009, ch. 2).
 pub fn range_enclosure_order1<F, G>(
     f: F,
     fprime: G,
@@ -77,6 +105,8 @@ where
     recurse(&f, &fprime, x, eps, max_depth)
 }
 
+/// Hausdorff distance between two nested intervals (`inner ⊆ outer`),
+/// i.e. max(|inf(inner) − inf(outer)|, |sup(outer) − sup(inner)|).
 pub fn hausdorff_nested(inner: Interval, outer: Interval) -> f64 {
     let d_lo = (inner.inf() - outer.inf()).abs();
     let d_hi = (outer.sup() - inner.sup()).abs();
@@ -85,6 +115,8 @@ pub fn hausdorff_nested(inner: Interval, outer: Interval) -> f64 {
 
 const ONE: Interval = const_interval!(1.0, 1.0);
 
+/// Computes n! as an `Interval` (rigorous enclosure, useful for the
+/// 1/n! remainder terms of Taylor expansions).
 pub fn factorial_interval(n: usize) -> Result<Interval, IntervalError> {
     let mut fact = ONE;
     for k in 1..=n {

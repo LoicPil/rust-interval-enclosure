@@ -1,3 +1,11 @@
+//! Certified quadrature on a uniform grid: midpoint, trapezoidal, Simpson
+//! and Gauss-Legendre. Each rule returns an `Interval` guaranteed to
+//! contain ∫ᵃᵇ f, combining the rule's point value with an explicit
+//! error term (depending on f'', f⁽⁴⁾ or f⁽²ⁿ⁾ depending on the method).
+//!
+//! See [`adaptative_integration`](crate::adaptative_integration) for the
+//! adaptive-refinement variant (error-driven subdivision).
+
 use crate::factorial_interval;
 use inari::{Interval, IntervalError, const_interval, interval};
 use nalgebra::{DMatrix, SymmetricEigen};
@@ -282,10 +290,14 @@ pub struct GaussLegendreRule {
 }
 
 impl GaussLegendreRule {
-    /// Constructs a new Gauss-Legendre rule of the given order.
+    /// Constructs a Gauss-Legendre rule of order `order` (nodes and
+    /// weights on [-1, 1]).
     ///
-    /// # Panics
-    /// Panics if `order < 1`.
+    /// Uses tabulated DLMF values (§3.5(v)) for orders 5, 10 and 20,
+    /// otherwise computes nodes/weights via the Golub-Welsch algorithm
+    /// (eigenvalues of the Jacobi matrix associated with Legendre
+    /// polynomials) — see Golub & Welsch, *Calculation of Gauss
+    /// Quadrature Rules*, Math. Comp. 23 (1969), 221-230.
     pub fn new(order: usize) -> Self {
         assert!(order >= 1);
 
