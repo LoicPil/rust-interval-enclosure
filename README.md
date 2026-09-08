@@ -76,7 +76,7 @@ The ODE verification method follows **Bünger [1]**: Picard iteration computes t
    *A Taylor model toolbox for solving ODEs implemented in MATLAB/INTLAB*  
    Journal of Computational and Applied Mathematics, 368, 112511.
 
-2. **[Mayer, G. (2017)](https://doi.org/10.1007/978-3-319-54969-5)**  
+2. **[Mayer, G. (2017)](https://doi.org/10.1515/9783110499469)**  
    *Interval Analysis: And Automatic Result Verification*  
    De Gruyter. ISBN: 978-3-110-49380-1
 
